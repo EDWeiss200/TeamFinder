@@ -1,5 +1,3 @@
-"""Точка входа FastAPI приложения TeamFinder."""
-
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +9,7 @@ from auth.schemas import UserCreate, UserRead
 from config import FRONTEND_URLS
 
 app = FastAPI(
-    title="TeamFinder API",
+    title="HackFlow API",
     description="Платформа автоматизации хакатонов, формирования команд и умного матчинга",
     version="1.0.0",
     docs_url="/docs",
@@ -58,6 +56,16 @@ app.include_router(
 )
 
 
+@app.get("/", tags=["Root"])
+async def root():
+    """Корневой эндпоинт со ссылкой на документацию."""
+    return {
+        "message": "TeamFinder API is running",
+        "docs_url": "/docs",
+        "health_check": "/health",
+    }
+
+
 @app.get("/health", tags=["Health"])
 async def health_check():
     """Проверка жизнеспособности сервиса."""
@@ -65,4 +73,4 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)

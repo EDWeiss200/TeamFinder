@@ -2,6 +2,8 @@
 
 from abc import ABC, abstractmethod
 from database.database import async_session_maker
+from repositories.event_repo import EventRepository
+from repositories.registration_repo import EventRegistrationRepository
 from repositories.user_repo import UserRepository
 
 
@@ -9,6 +11,8 @@ class IUnitOfWork(ABC):
     """Интерфейс единицы работы (Unit of Work)."""
 
     users: UserRepository
+    events: EventRepository
+    registrations: EventRegistrationRepository
 
     @abstractmethod
     def __init__(self): ...
@@ -36,6 +40,8 @@ class UnitOfWork(IUnitOfWork):
         # При входе в контекстный менеджер создается единая сессия для всех репозиториев
         self.session = self.session_factory()
         self.users = UserRepository(self.session)
+        self.events = EventRepository(self.session)
+        self.registrations = EventRegistrationRepository(self.session)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
