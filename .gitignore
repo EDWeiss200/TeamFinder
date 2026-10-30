@@ -1,1 +1,50 @@
-/backend/src/.env
+# Окружение и секреты
+.env
+.env.*
+!.env.example
+*.env
+
+# Python / Байткод и кэш
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Виртуальные окружения
+venv/
+.venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE и редакторы кода
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Тесты, покрытие и линтеры
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+.ruff_cache/
+.mypy_cache/
+
+# Сборка и распространение
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Логи и временные файлы
+*.log
+logs/
+tmp/
+temp/
