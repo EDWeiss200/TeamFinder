@@ -4,7 +4,15 @@ from datetime import datetime
 from typing import Optional, List
 
 from fastapi_users.db import SQLAlchemyBaseUserTableUUID
-from sqlalchemy import BigInteger, Boolean, Enum as SQLEnum, SmallInteger, String, Text, func
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Enum as SQLEnum,
+    SmallInteger,
+    String,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import TIMESTAMP
@@ -41,7 +49,12 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         server_default="{}",
         nullable=False,
     )
-    primary_role: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    specializations: Mapped[List[str]] = mapped_column(
+        ARRAY(String),
+        default=list,
+        server_default="{}",
+        nullable=False,
+    )
 
     # Социальные сети
     vk_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)

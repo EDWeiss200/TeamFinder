@@ -17,7 +17,9 @@ DB_NAME = os.environ.get("DB_NAME", "teamtinder")
 DB_PORT = os.environ.get("DB_PORT", "5432")
 
 SECRET_AUTH = os.environ.get("SECRET_AUTH", "DEV_SECRET_AUTH_KEY_1234567890")
-SECRET_USER_MANAGER = os.environ.get("SECRET_USER_MANAGER", "DEV_SECRET_USER_MANAGER_KEY_1234567890")
+SECRET_USER_MANAGER = os.environ.get(
+    "SECRET_USER_MANAGER", "DEV_SECRET_USER_MANAGER_KEY_1234567890"
+)
 
 # Настройки Cookie: для локальной разработки без HTTPS устанавливается False
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "False").lower() in ("true", "1", "t")

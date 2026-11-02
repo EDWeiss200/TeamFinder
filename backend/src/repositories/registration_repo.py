@@ -19,8 +19,6 @@ class EventRegistrationRepository(SQLAlchemyRepository):
     async def get_solo_participants(
         self,
         event_id: uuid.UUID,
-        role: Optional[str] = None,
-        skill: Optional[str] = None,
         tags: Optional[List[str]] = None,
         limit: int = 100,
         offset: int = 0,
@@ -28,12 +26,10 @@ class EventRegistrationRepository(SQLAlchemyRepository):
         """Получить свободных участников мероприятия без команды (team_id IS NULL).
 
         Выполняет JOIN с пользователями, жадную предзагрузку связанных данных профиля (joinedload)
-        и фильтрацию по массиву навыков PostgreSQL ARRAY (skills.any / skills.overlap) и роли.
+        и фильтрацию по массиву тегов пользователя (User.skills.overlap).
 
         :param event_id: ID мероприятия
-        :param role: фильтр по роли
-        :param skill: конкретный навык в массиве skills
-        :param tags: список тегов для проверки пересечения с навыками или ролями
+        :param tags: список тегов для проверки пересечения с навыками и компетенциями
         :param limit: лимит записей (пагинация)
         :param offset: смещение (пагинация)
         """
@@ -47,23 +43,11 @@ class EventRegistrationRepository(SQLAlchemyRepository):
             )
         )
 
-        if role:
-            stmt = stmt.where(
-                or_(
-                    self.model.role_in_team.ilike(f"%{role}%"),
-                    User.primary_role.ilike(f"%{role}%"),
-                )
-            )
-
-        if skill:
-            stmt = stmt.where(User.skills.any(skill))
-
         if tags:
             stmt = stmt.where(
                 or_(
+                    User.specializations.overlap(tags),
                     User.skills.overlap(tags),
-                    self.model.role_in_team.in_(tags),
-                    User.primary_role.in_(tags),
                 )
             )
 

@@ -11,6 +11,7 @@ DATABASE_URL = DATABASE_URL_CONFIG
 
 class Base(DeclarativeBase):
     """Базовый класс для всех моделей SQLAlchemy."""
+
     pass
 
 

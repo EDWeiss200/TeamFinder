@@ -3,13 +3,27 @@ import enum
 
 class UserRole(str, enum.Enum):
     """Роли пользователей в системе."""
+
     PARTICIPANT = "participant"
     ORGANIZER = "organizer"
     ADMIN = "admin"
 
 
+class ParticipantSpecialization(str, enum.Enum):
+    """Специализации участников в командах."""
+
+    FRONTEND = "frontend"
+    BACKEND = "backend"
+    MOBILE = "mobile"
+    DESIGN = "design"
+    AI_ML = "ai_ml"
+    MANAGEMENT = "management"
+    QA_DEVOPS = "qa_devops"
+
+
 class EventStatus(str, enum.Enum):
     """Статусы жизненного цикла мероприятия."""
+
     DRAFT = "draft"
     REGISTRATION = "registration"
     TEAM_LOCK = "team_lock"
@@ -19,6 +33,7 @@ class EventStatus(str, enum.Enum):
 
 class EventFormat(str, enum.Enum):
     """Формат проведения мероприятия."""
+
     OFFLINE = "offline"
     ONLINE = "online"
     HYBRID = "hybrid"
@@ -26,6 +41,7 @@ class EventFormat(str, enum.Enum):
 
 class TeamRequestStatus(str, enum.Enum):
     """Статусы заявок и приглашений в команду."""
+
     PENDING_CAPTAIN = "pending_captain"
     PENDING_USER = "pending_user"
     ACCEPTED = "accepted"
@@ -35,5 +51,6 @@ class TeamRequestStatus(str, enum.Enum):
 
 class TeamRequestType(str, enum.Enum):
     """Тип заявки: отклик студента или приглашение капитана."""
+
     APPLICATION = "application"
     INVITE = "invite"

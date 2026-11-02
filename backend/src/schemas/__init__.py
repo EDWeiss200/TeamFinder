@@ -12,6 +12,14 @@ from schemas.event import (
     SoloParticipantRead,
     UserEventItemRead,
 )
+from schemas.team import (
+    TeamBase,
+    TeamCreate,
+    TeamDetailRead,
+    TeamMemberRead,
+    TeamRead,
+    TeamUpdate,
+)
 
 __all__ = [
     "EventBase",
@@ -24,4 +32,10 @@ __all__ = [
     "EventRegistrationUserRead",
     "SoloParticipantRead",
     "UserEventItemRead",
+    "TeamBase",
+    "TeamCreate",
+    "TeamUpdate",
+    "TeamRead",
+    "TeamDetailRead",
+    "TeamMemberRead",
 ]

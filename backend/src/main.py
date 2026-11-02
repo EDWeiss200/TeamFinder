@@ -2,6 +2,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from api.event_router import router as event_router
 from api.exception_handlers import register_exception_handlers
 from api.user_router import router as user_router
 from auth.auth import auth_backend, bearer_backend, fastapi_users
@@ -52,6 +53,12 @@ app.include_router(
 # Роутер пользователей и профилей
 app.include_router(
     user_router,
+    prefix="/api/v1",
+)
+
+# Роутер мероприятий и каталога
+app.include_router(
+    event_router,
     prefix="/api/v1",
 )
 

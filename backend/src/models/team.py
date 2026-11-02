@@ -119,7 +119,12 @@ class TeamRequest(Base):
         nullable=False,
         index=True,
     )
-    target_role: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_role: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default=None,
+    )
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
 
     request_type: Mapped[TeamRequestType] = mapped_column(
         SQLEnum(TeamRequestType, name="team_request_type_enum", native_enum=False),

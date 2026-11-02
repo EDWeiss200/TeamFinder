@@ -135,9 +135,7 @@ class EventRegistration(Base):
     """Регистрация пользователя на мероприятие (участник или одиночка)."""
 
     __tablename__ = "event_registrations"
-    __table_args__ = (
-        UniqueConstraint("event_id", "user_id", name="uq_event_user"),
-    )
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_event_user"),)
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -162,7 +160,6 @@ class EventRegistration(Base):
         nullable=True,
         index=True,
     )
-    role_in_team: Mapped[str] = mapped_column(String(100), nullable=False)
     custom_answers: Mapped[Optional[Dict[str, Any]]] = mapped_column(
         JSONB,
         nullable=True,

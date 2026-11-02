@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class AbstractRepository(ABC):
-
     @abstractmethod
     async def add_one(self, data: dict) -> Any:
         raise NotImplementedError
@@ -39,11 +38,7 @@ class SQLAlchemyRepository(AbstractRepository):
         self.session = session
 
     async def add_one(self, data: dict):
-        stmt = (
-            insert(self.model)
-            .values(**data)
-            .returning(self.model)
-        )
+        stmt = insert(self.model).values(**data).returning(self.model)
         res = await self.session.execute(stmt)
         return res.scalar_one()
 
@@ -75,10 +70,6 @@ class SQLAlchemyRepository(AbstractRepository):
         return res.scalar_one_or_none()
 
     async def delete_one(self, id: Any):
-        stmt = (
-            delete(self.model)
-            .where(self.model.id == id)
-            .returning(self.model.id)
-        )
+        stmt = delete(self.model).where(self.model.id == id).returning(self.model.id)
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()

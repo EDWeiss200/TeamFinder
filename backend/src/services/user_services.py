@@ -5,7 +5,7 @@ import uuid
 from typing import Optional
 
 from auth.auth import password_helper
-from auth.schemas import UserUpdate
+from auth.schemas import UserPasswordChange, UserUpdate
 from config import BOT_USERNAME
 from models.user import User
 from utils.exceptions import EntityNotFoundError, InvalidStateError
@@ -27,31 +27,43 @@ class UserServices:
             return user
 
     async def update_profile(self, user_id: uuid.UUID, user_data: UserUpdate) -> User:
-        """Обновить профиль пользователя."""
+        """Обновить поля профиля пользователя (без смены пароля)."""
         async with self.uow:
             user = await self.uow.users.find_one_or_none(id=user_id)
             if not user:
                 raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
 
             update_data = user_data.model_dump(exclude_unset=True)
-
-            # Если передан пароль — хэшируем его в hashed_password
-            if "password" in update_data:
-                password = update_data.pop("password")
-                if password:
-                    update_data["hashed_password"] = password_helper.hash(password)
-
-            # Пользователь не может сам себе выдать права админа через обновление профиля
-            update_data.pop("is_superuser", None)
-            update_data.pop("is_verified", None)
-
-            # Фильтруем только те поля, которые реально существуют в таблице User
-            valid_columns = {c.name for c in self.uow.users.model.__table__.columns}
-            filtered_data = {k: v for k, v in update_data.items() if k in valid_columns}
-
-            updated_user = await self.uow.users.update(user_id, filtered_data)
+            updated_user = await self.uow.users.update(user_id, update_data)
             await self.uow.commit()
             return updated_user
+
+    async def change_password(
+        self,
+        user_id: uuid.UUID,
+        password_data: UserPasswordChange,
+    ) -> None:
+        """Безопасная смена пароля с подтверждением старого пароля."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            # 1. Проверяем корректность старого пароля
+            verified, _ = password_helper.verify_and_update(
+                password_data.old_password, user.hashed_password
+            )
+            if not verified:
+                raise InvalidStateError("Неверный текущий пароль")
+
+            # 2. Новый пароль не должен совпадать с текущим
+            if password_data.old_password == password_data.new_password:
+                raise InvalidStateError("Новый пароль не должен совпадать с текущим")
+
+            # 3. Хэшируем и сохраняем новый пароль
+            hashed_password = password_helper.hash(password_data.new_password)
+            await self.uow.users.update(user_id, {"hashed_password": hashed_password})
+            await self.uow.commit()
 
     async def generate_telegram_bind_link(self, user_id: uuid.UUID) -> str:
         """Сгенерировать одноразовую deep-link ссылку для привязки Telegram-бота."""
@@ -77,12 +89,18 @@ class UserServices:
         async with self.uow:
             user = await self.uow.users.find_one_or_none(telegram_bind_token=token)
             if not user:
-                raise InvalidStateError("Недействительный или истекший токен привязки Telegram")
+                raise InvalidStateError(
+                    "Недействительный или истекший токен привязки Telegram"
+                )
 
             # Проверяем, не привязан ли этот Telegram ID к другому пользователю
-            existing_user = await self.uow.users.find_one_or_none(telegram_id=telegram_id)
+            existing_user = await self.uow.users.find_one_or_none(
+                telegram_id=telegram_id
+            )
             if existing_user and existing_user.id != user.id:
-                raise InvalidStateError("Данный Telegram-аккаунт уже привязан к другому профилю")
+                raise InvalidStateError(
+                    "Данный Telegram-аккаунт уже привязан к другому профилю"
+                )
 
             update_data = {
                 "telegram_id": telegram_id,

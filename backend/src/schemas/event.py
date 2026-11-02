@@ -26,7 +26,7 @@ class EventRegistrationUserRead(BaseModel):
     course: Optional[int] = None
     bio: Optional[str] = None
     skills: List[str] = []
-    primary_role: Optional[str] = None
+    specializations: List[str] = []
     telegram_username: Optional[str] = None
     vk_url: Optional[str] = None
     github_url: Optional[str] = None
@@ -42,14 +42,19 @@ class EventRegistrationUserRead(BaseModel):
 class EventRegistrationCreate(BaseModel):
     """Схема подачи заявки на регистрацию в мероприятии."""
 
-    role_in_team: str = Field(
-        ...,
-        max_length=100,
-        description="Желаемая роль участника на мероприятии (например: 'фронт', 'бэк', 'дизайн')",
-    )
     custom_answers: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="Ответы на специфичные вопросы анкеты конкретного хакатона",
+        description="Ответы на специфичные вопросы анкеты конкретного хакатона (ключ: ID поля, значение: ответ)",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "custom_answers": {
+                    "additionalProp1": "value"
+                }
+            }
+        }
     )
 
 
@@ -60,7 +65,6 @@ class EventRegistrationRead(BaseModel):
     event_id: uuid.UUID
     user_id: uuid.UUID
     team_id: Optional[uuid.UUID] = None
-    role_in_team: str
     custom_answers: Optional[Dict[str, Any]] = None
     joined_team_at: Optional[datetime] = None
     registered_at: datetime
@@ -75,7 +79,6 @@ class SoloParticipantRead(BaseModel):
     event_id: uuid.UUID
     user_id: uuid.UUID
     team_id: Optional[uuid.UUID] = None
-    role_in_team: str
     custom_answers: Optional[Dict[str, Any]] = None
     registered_at: datetime
     user: EventRegistrationUserRead

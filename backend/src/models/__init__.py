@@ -4,6 +4,7 @@ from database.database import Base
 from models.enums import (
     EventFormat,
     EventStatus,
+    ParticipantSpecialization,
     TeamRequestStatus,
     TeamRequestType,
     UserRole,
@@ -22,6 +23,7 @@ __all__ = [
     "TeamRequest",
     "Submission",
     "UserRole",
+    "ParticipantSpecialization",
     "EventStatus",
     "EventFormat",
     "TeamRequestStatus",

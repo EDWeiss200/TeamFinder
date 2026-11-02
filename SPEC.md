@@ -35,33 +35,35 @@
 * **Публичные и закрытые ивенты:** поле `is_public` позволяет публиковать крупные хакатоны на главной странице (`is_public = True`) или скрывать локальные кафедральные соревнования (`is_public = False`), доступ к которым возможен только по прямой ссылке-приглашению (`invite_code`).
 
 ### 2.2. Профиль участника
-* Содержит аватар, имя и фамилию, никнейм (например, `Ghostrai666`), теги навыков (`дизайн`, `C#`, `бэк`), тег принадлежности к вузу/институту (`сфу икит`), блок «О себе» (`bio`), кнопки-ссылки на Telegram и VK, а также блок «Ваши события» (история и активные регистрации).
+* Содержит аватар, имя и фамилию, никнейм (например, `Ghostrai666`), массив специализаций `specializations` (фиксированные роли из каталога: `frontend`, `backend`, `design` и др.), гибкие теги навыков и стека `skills` (`C#`, `React`, `Docker`), тег принадлежности к вузу/институту (`сфу икит`), блок «О себе» (`bio`), кнопки-ссылки на Telegram и VK, а также блок «Ваши события» (история и активные регистрации).
+* Для пользователей с системной ролью `ORGANIZER` массив `specializations` пустой (`[]`), так как организатор не участвует в хакатоне в роли разработчика.
 
 ### 2.3. Страница события и механика тегов «Ищем» / «Уже есть»
 * **Инфо-панель события:** отображает организатора, теги формата (`Идёт`, `Очно`, `Хакатон`, `Веб-разработка`, `Дизайн`), 4 карточки дат/лимитов (`Конец регистрации`, `Начало мероприятия`, `Конец мероприятия`, `Размер команды 3-5`) и подробное Markdown-описание кейса и этапов.
 * **Форма «Создать команду»:** содержит поля `название`, `кол-во людей` (`max_members`, в пределах лимитов хакатона), выбор тегов `вы ищете людей` (`needed_roles`) и кнопку приглашения участников.
 * **Карточка команды (например, «Drill Flex»):**
   * отображает аватарки участников (у капитана — иконка короны), счетчик `3/5 человек`, описание идеи команды;
-  * **две группы тегов ролей:**
-    * **`Ищем` (`needed_roles`):** роли, которых не хватает команде (задаются капитаном при создании/редактировании);
-    * **`Уже есть` (`existing_roles`):** динамически вычисляемый список ролей уже вступивших участников команды. Когда фронтендер вступает в команду, его роль автоматически попадает в зеленый список «Уже есть», а из списка «Ищем» убирается одна открытая позиция фронтендера.
+  * **две группы тегов ролей и компетенций:**
+    * **`Ищем` (`needed_roles`):** теги ролей и навыков, которых не хватает команде (задаются капитаном при создании/редактировании, например: `["backend", "design"]`);
+    * **`Уже есть` (`existing_roles`):** динамически вычисляемый список тегов уже вступивших участников команды (автоматически формируется на основе специализаций `user.specializations` и навыков `user.skills` всех членов команды). Когда участник вступает в команду, его специализации и навыки закрывают открытые позиции из списка «Ищем».
 
-### 2.4. Единый пайплайн поиска: заявки от одиночек + приглашения от капитанов
+### 2.4. Единый пайплайн поиска: отклики в команду + приглашения от капитанов
 На макетах присутствуют два встречных сценария:
 1. Одиночка смотрит список команд и нажимает **«Откликнуться»** (Экран 2).
 2. Капитан открывает каталог свободных участников («Пригласить участников в команду», Экран 3) и приглашает понравившегося человека.
 
-**Архитектурное решение (Unified Request State Machine):**
-Вместо двух разных таблиц используется единая таблица `team_requests`, которая поддерживает двойное подтверждение (финальное решение всегда за одиночкой):
+**Архитектурное решение (Unified Request State Machine с двойным подтверждением):**
+Вместо двух разных таблиц используется единая таблица `team_requests`. Отклик подается **целиком на команду** (без искусственного выбора одной конкретной позиции), что дает капитану полную картину компетенций участника и возможность предварительно пообщаться в Telegram:
 * **Сценарий А (одиночка откликается в команду):**
-  1. Участник жмет «Откликнуться» и указывает роль (`target_role`) $\rightarrow$ создается запись со статусом `PENDING_CAPTAIN`. До решения капитана участник может отозвать отклик $\rightarrow$ статус переходит в `CANCELLED`.
-  2. Капитану в Telegram (и на сайт) приходит уведомление. Капитан может отклонить заявку $\rightarrow$ `REJECTED`, либо одобрить $\rightarrow$ статус меняется на `PENDING_USER` (оффер отправлен участнику, но место в команде еще жестко не забронировано).
-  3. Участнику приходит уведомление: *«Команда Drill Flex готова принять тебя! Подтверди вступление»*. Участник может отказаться $\rightarrow$ `REJECTED`, либо нажать «Вступить» $\rightarrow$ статус `ACCEPTED`, все остальные активные заявки этого участника автоматически переходят в `CANCELLED`.
-* **Сценарий Б (капитан сам приглашает участника из каталога на Экране 3):**
-  1. Капитан жмет «Пригласить» на карточке свободного участника $\rightarrow$ запись создается **сразу** в статусе `PENDING_USER`! Пока участник не ответил, капитан может отозвать инвайт $\rightarrow$ статус `CANCELLED`.
-  2. Участнику в Telegram прилетает инвайт. Он может отклонить инвайт $\rightarrow$ `REJECTED`, либо нажать «Вступить» $\rightarrow$ статус `ACCEPTED`.
+  1. Участник нажимает «Откликнуться» на карточке команды, при желании указывает сопроводительное сообщение (`message: Optional[str]`) $\rightarrow$ создается запись в `team_requests` со статусом `PENDING_CAPTAIN` (`target_role` опционален). До решения капитана участник может отозвать отклик $\rightarrow$ статус переходит в `CANCELLED`.
+  2. Капитану в Telegram-бот и на сайт прилетает уведомление с карточкой кандидата: имя, вуз, группа, специализации (`specializations`), навыки (`skills`), сообщение кандидата и прямые ссылки на Telegram/VK.
+  3. Капитан может написать кандидату в Telegram, обсудить задачи и проект. Если кандидат подходит, капитан нажимает «Одобрить / Отправить оффер» $\rightarrow$ статус заявки меняется на `PENDING_USER` (оффер отправлен кандидату). Если не подходит — капитан жмет «Отклонить» $\rightarrow$ `REJECTED`.
+  4. Участнику в Telegram приходит уведомление: *«Команда Drill Flex готова принять тебя! Подтверди вступление»*. Участник может отказаться $\rightarrow$ `REJECTED`, либо нажать «Вступить» $\rightarrow$ статус переходит в `ACCEPTED`, участник зачисляется в команду, а все остальные его активные заявки автоматически отменяются (`CANCELLED`).
+* **Сценарий Б (капитан сам приглашает участника из каталога одиночек на Экране 3):**
+  1. Капитан просматривает каталог одиночек (с фильтрацией по пересечению тегов со `specializations` и `skills`), выбирает участника и жмет «Пригласить» (может прикрепить `message` или предложить `target_role`) $\rightarrow$ запись создается **сразу** в статусе `PENDING_USER`! Пока участник не ответил, капитан может отозвать инвайт $\rightarrow$ статус `CANCELLED`.
+  2. Участнику в Telegram прилетает приглашение от команды со ссылкой на ее карточку. Он может отклонить инвайт $\rightarrow$ `REJECTED`, либо нажать «Вступить» $\rightarrow$ статус `ACCEPTED`.
 * **Сценарий В (прямая инвайт-ссылка для друзей):**
-  1. Капитан копирует секретную ссылку команды `/events/{id}/join-team?token={invite_token}` и кидает друзьям в личку.
+  1. Капитан копирует секретную ссылку команды `/events/{id}/join-team?token={invite_token}` и отправляет друзьям в личные сообщения.
   2. Переход по ссылке сразу добавляет участника в команду (`ACCEPTED`) без промежуточных подтверждений, если в команде есть свободные места.
 
 ---
@@ -246,7 +248,16 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 ## 4. Схема базы данных (PostgreSQL)
 
 ### 4.1. Перечисления (`src/models/enums.py`)
-* **`UserRole`:** `PARTICIPANT = "participant"`, `ORGANIZER = "organizer"`, `ADMIN = "admin"`
+* **`UserRole` (системная роль доступа):** `PARTICIPANT = "participant"`, `ORGANIZER = "organizer"`, `ADMIN = "admin"`.
+* **`ParticipantSpecialization` (профессиональные роли в разработке / хакатоне):**
+  * `FRONTEND = "frontend"` (Фронтенд-разработка)
+  * `BACKEND = "backend"` (Бэкенд-разработка)
+  * `MOBILE = "mobile"` (Мобильная разработка)
+  * `DESIGN = "design"` (UI/UX дизайн)
+  * `AI_ML = "ai_ml"` (Искусственный интеллект и машинное обучение)
+  * `MANAGEMENT = "management"` (Управление проектом / продакт)
+  * `QA_DEVOPS = "qa_devops"` (Тестирование и DevOps)
+  * *Примечание:* поле `specializations` у пользователя является опциональным массивом строк (`List[str]`). Для организаторов (`UserRole.ORGANIZER`) этот массив пуст (`[]`).
 * **`EventStatus`:** 
   * `DRAFT = "draft"` (черновик, виден только организатору)
   * `REGISTRATION = "registration"` (открыта регистрация, создание команд и переходы)
@@ -255,7 +266,7 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
   * `FINISHED = "finished"` (мероприятие завершено, архив)
 * **`EventFormat`:** `OFFLINE = "offline"`, `ONLINE = "online"`, `HYBRID = "hybrid"`
 * **`TeamRequestStatus`:** `PENDING_CAPTAIN = "pending_captain"`, `PENDING_USER = "pending_user"`, `ACCEPTED = "accepted"`, `REJECTED = "rejected"`, `CANCELLED = "cancelled"`
-* **`TeamRequestType`:** `APPLICATION = "application"` (отклик от участника), `INVITE = "invite"` (приглашение от капитана)
+* **`TeamRequestType`:** `APPLICATION = "application"` (отклик от участника в команду), `INVITE = "invite"` (приглашение от капитана участнику)
 
 ### 4.2. Таблицы и поля
 
@@ -268,7 +279,7 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 | `is_active` | `BOOLEAN` | Активен ли аккаунт (по умолчанию `True`) |
 | `is_superuser` | `BOOLEAN` | Супер-админ системы (по умолчанию `False`) |
 | `is_verified` | `BOOLEAN` | Подтвержден ли email (по умолчанию `False`) |
-| `role` | `Enum(UserRole)` | Роль в системе (по умолчанию `PARTICIPANT`) |
+| `role` | `Enum(UserRole)` | Роль в системе (`PARTICIPANT`, `ORGANIZER`, `ADMIN`, default `PARTICIPANT`) |
 | `full_name` | `VARCHAR(255)` | Имя и фамилия (для выгрузки в Excel деканату) |
 | `nickname` | `VARCHAR(100)` (Nullable) | Отображаемый никнейм (например, `Ghostrai666`) |
 | `avatar_url` | `VARCHAR(512)` (Nullable) | Ссылка на аватарку |
@@ -276,12 +287,12 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 | `study_group` | `VARCHAR(100)` (Nullable) | Учебная группа (например, `КИ25-20Б`) |
 | `course` | `SMALLINT` (Nullable) | Курс обучения ($1\dots6$) |
 | `bio` | `TEXT` (Nullable) | Описание «О себе» |
-| `skills` | `ARRAY(VARCHAR)` | Массив тегов навыков (`["дизайн", "C#", "бэк"]`, default `[]`) |
-| `primary_role` | `VARCHAR(100)` (Nullable) | Основная роль (`"фронт"`, `"бэк"`, `"дизайн"`, `"ML"`, `"аналитик"`) |
+| `skills` | `ARRAY(VARCHAR)` | Массив тегов навыков и технологий (`["React", "FastAPI", "Docker"]`, default `[]`) |
+| `specializations` | `ARRAY(VARCHAR)` | Массив специализаций участника (`["frontend", "design"]`, default `[]`, для организатора `[]`) |
 | `vk_url` | `VARCHAR(255)` (Nullable) | Ссылка на профиль ВКонтакте |
 | `github_url` | `VARCHAR(255)` (Nullable) | Ссылка на профиль GitHub |
 | `telegram_id` | `BIGINT` (Unique, Nullable) | Цифровой ID пользователя в Telegram (для пушей от бота) |
-| `telegram_username`| `VARCHAR(100)` (Nullable) | Ник в Telegram без `@` (для кнопки «Написать» на сайте) |
+| `telegram_username`| `VARCHAR(100)` (Nullable) | Ник в Telegram без `@` (для связи капитана с кандидатом) |
 | `telegram_bind_token`| `VARCHAR(64)` (Nullable, Unique)| Одноразовый токен для привязки бота через `/start` |
 | `is_bot_active` | `BOOLEAN` | `True`, если бот привязан и не заблокирован пользователем |
 | `created_at` | `TIMESTAMPTZ` | Дата регистрации (`server_default=func.now()`) |
@@ -336,7 +347,6 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 | `event_id` | `UUID` (FK -> `events.id`) | ID мероприятия (`ondelete="CASCADE"`) |
 | `user_id` | `UUID` (FK -> `users.id`) | ID студента (`ondelete="CASCADE"`) |
 | `team_id` | `UUID` (FK -> `teams.id`, Nullable)| Если `NULL` — участник является **одиночкой** и виден в каталоге «Пригласить участников» (`ondelete="SET NULL"`) |
-| `role_in_team` | `VARCHAR(100)` | Роль участника на этом хакатоне (формирует список тегов «Уже есть» у команды) |
 | `custom_answers` | `JSONB` (Nullable) | Ответы на специфичные вопросы конкретного хакатона |
 | `joined_team_at` | `TIMESTAMPTZ` (Nullable) | Время вступления в команду (для выбора нового капитана при выходе старого) |
 | `registered_at` | `TIMESTAMPTZ` | Время регистрации на событие |
@@ -348,9 +358,10 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 | `event_id` | `UUID` (FK -> `events.id`) | ID мероприятия (`ondelete="CASCADE"`) |
 | `team_id` | `UUID` (FK -> `teams.id`) | В какую команду (`ondelete="CASCADE"`) |
 | `user_id` | `UUID` (FK -> `users.id`) | Какой участник (`ondelete="CASCADE"`) |
-| `target_role` | `VARCHAR(100)` | На какую роль подается заявка / приглашение (например, `"фронт"`) |
-| `request_type` | `Enum(TeamRequestType)` | `APPLICATION` (инициатор студент) или `INVITE` (инициатор капитан) |
-| `status` | `Enum(TeamRequestStatus)`| Текущий статус в пайплайне |
+| `target_role` | `VARCHAR(100)` (Nullable) | Опциональная целевая роль (при отклике в команду не требуется, отклик идет целиком на команду) |
+| `message` | `TEXT` (Nullable) | Сопроводительное сообщение от кандидата или комментарий капитана |
+| `request_type` | `Enum(TeamRequestType)` | `APPLICATION` (отклик участника в команду) или `INVITE` (инвайт капитана) |
+| `status` | `Enum(TeamRequestStatus)`| Текущий статус в пайплайне (`PENDING_CAPTAIN`, `PENDING_USER`, `ACCEPTED`, `REJECTED`, `CANCELLED`) |
 | `created_at` | `TIMESTAMPTZ` | Дата создания |
 | `updated_at` | `TIMESTAMPTZ` | Дата последнего изменения статуса |
 
@@ -391,8 +402,8 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 5. Подсчитывается текущее число участников в `event_registrations` для данного `team_id`.
 6. Лимит проверяется по `min(team.max_members, event.max_team_size)`. Если `current_members_count >= limit`, выбрасывается исключение `TeamIsFullError` (HTTP `409 Conflict`).
 7. Если проверки пройдены:
-   * в `event_registrations` у пользователя проставляются `team_id`, `role_in_team = request.target_role` и `joined_team_at = now()`;
-   * если `target_role` присутствует в массиве `team.needed_roles`, одно вхождение этой роли удаляется из `team.needed_roles`;
+   * в `event_registrations` у пользователя проставляются `team_id` и `joined_team_at = now()`;
+   * если был указан `target_role` и он присутствует в массиве `team.needed_roles`, одно вхождение этой роли удаляется из `team.needed_roles`. Если `target_role` не был указан (отклик подавался на команду в целом), система сопоставляет специализации (`user.specializations`) и навыки (`user.skills`) вступившего участника со списком `team.needed_roles` и удаляет закрытые позиции;
    * текущая заявка переводится в `ACCEPTED`;
    * все остальные активные заявки и приглашения этого пользователя в рамках данного `event_id` массово переводятся в статус `CANCELLED`.
 8. Выполняется `await self.uow.commit()`.
@@ -412,11 +423,11 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
    * получаем одиночек мероприятия: `registrations` где `event_id == event.id` и `team_id IS NULL`;
    * получаем неполные команды: `teams` где `allow_auto_match == True` и число участников $< \text{team.max\_members}$.
 2. **Этап 1: доукомплектование существующих команд по ролям (жадный алгоритм):**
-   * для каждой неполной команды с дефицитом `needed_roles` ищем подходящих одиночек по совпадению `role_in_team` и `skills`;
-   * ранжируем по весу $W = | \text{team.needed\_roles} \cap (\text{user.skills} \cup \{\text{user.role\_in\_team}\}) |$;
-   * добавляем лучших кандидатов в команду с обновлением `role_in_team` и удалением закрытой роли из `needed_roles`.
+   * для каждой неполной команды с дефицитом `needed_roles` ищем подходящих одиночек по совпадению с массивами `user.specializations` и `user.skills`;
+   * ранжируем кандидатов по совокупному весу пересечения: $W = | \text{team.needed\_roles} \cap (\text{user.specializations} \cup \text{user.skills}) |$;
+   * добавляем лучших кандидатов в команду с удалением закрытых ролей из `needed_roles`.
 3. **Этап 2: формирование новых команд из оставшихся одиночек:**
-   * оставшиеся одиночки группируются по ролевым корзинам (`бэк`, `фронт`, `дизайн`, `ML`, `аналитик` и т.д.);
+   * оставшиеся одиночки группируются по ролевым корзинам специализаций `specializations` (`backend`, `frontend`, `design`, `ai_ml`, `mobile` и т.д.);
    * алгоритм Round-Robin собирает сбалансированные команды оптимального размера $S = \lfloor \frac{\text{min\_team\_size} + \text{max\_team\_size}}{2} \rfloor$;
    * командам присваиваются названия `AutoTeam #1`, `AutoTeam #2`;
    * **назначение капитана:** капитаном новой команды автоматически назначается участник с самым ранним временем регистрации (`registered_at`) или старшим курсом;
@@ -436,17 +447,18 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 ### 6.1. Авторизация и профиль (`src/auth/` + `src/api/user_router.py`)
 * `POST /api/v1/auth/jwt/login` — вход по email и паролю (стандартный роут `fastapi-users`, форма `username` + `password`).
 * `POST /api/v1/auth/jwt/logout` — выход из системы.
-* `POST /api/v1/auth/register` — регистрация нового пользователя (стандартный роут `fastapi-users`, принимает `email`, `password`, `full_name`, `nickname`, `university`, `study_group`, `course`, `skills`, `primary_role`).
+* `POST /api/v1/auth/register` — регистрация нового пользователя (стандартный роут `fastapi-users`, принимает `email`, `password`, `full_name`, опциональные `nickname`, `university`, `study_group`, `course`, `skills` [default `[]`], `specializations` [default `[]`, для организатора пустой массив]).
 * `GET /api/v1/users/me` — получение своего профиля.
-* `PATCH /api/v1/users/me` — редактирование профиля (`full_name`, `nickname`, `university`, `study_group`, `course`, `skills`, `primary_role`, `bio`, `vk_url`, `github_url`, `avatar_url`).
+* `PATCH /api/v1/users/me` — редактирование профиля (`full_name`, `nickname`, `university`, `study_group`, `course`, `skills`, `specializations`, `bio`, `vk_url`, `github_url`, `avatar_url`).
+* `POST /api/v1/users/me/change-password` — безопасная смена пароля с обязательным подтверждением старого пароля (`old_password`, `new_password`).
 * `GET /api/v1/users/me/events` — кастомный роут: список событий, в которых участвует пользователь (для блока «Ваши события» в профиле и виджета на главной).
 * `POST /api/v1/users/me/telegram-bind-link` — кастомный роут: генерация одноразовой ссылки вида `https://t.me/TeamFinderBot?start=bind_8f9a2b...` для привязки Telegram-аккаунта.
 
 ### 6.2. События и каталог (`src/api/event_router.py`)
 * `GET /api/v1/events` — получение списка публичных событий для главной страницы (фильтры: `is_featured`, `status`, пагинация `limit`/`offset`).
-* `GET /api/v1/events/{event_id_or_invite_code}` — детальная страница события (описание, даты, размер команды, а также `my_registration`: зарегистрирован ли текущий юзер и в какой он команде).
-* `POST /api/v1/events/{event_id}/register` — регистрация участника на событие (сохранение `role_in_team` и ответов на `custom_answers`).
-* `GET /api/v1/events/{event_id}/solo-participants` — каталог свободных участников без команды (`team_id IS NULL`) для экрана «Пригласить участников в команду», с фильтрацией по тегам (`skill`, `role`).
+* `GET /api/v1/events/{event_id_or_invite_code}` — детальная страница события (описание, даты, размер команды, `custom_fields_schema`, а также `my_registration`: зарегистрирован ли текущий юзер и в какой он команде).
+* `POST /api/v1/events/{event_id}/register` — регистрация участника на событие (сохранение ответов на `custom_answers`, без указания роли, так как компетенции участника определяются специализациями `specializations` и навыками `skills` из его профиля).
+* `GET /api/v1/events/{event_id}/solo-participants` — каталог свободных участников без команды (`team_id IS NULL`) для экрана «Пригласить участников в команду», с фильтрацией по списку тегов (`tags`, поиск пересечения с `User.specializations` или `User.skills`, пагинация `limit`/`offset`).
 
 ### 6.3. Команды (`src/api/team_router.py`)
 * `GET /api/v1/events/{event_id}/teams` — список всех команд мероприятия (с вычисленными массивами тегов `needed_roles` [«Ищем»] и `existing_roles` [«Уже есть»], количеством участников `3/5` и списком участников с аватарками).
@@ -460,9 +472,9 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 
 ### 6.4. Пайплайн откликов и инвайтов (`src/api/request_router.py`)
 * `GET /api/v1/events/{event_id}/my-requests` — список всех входящих/исходящих заявок текущего пользователя (или его команды, если он капитан) для отображения на сайте.
-* `POST /api/v1/teams/{team_id}/apply` — участник жмет «Откликнуться» на карточке команды (создает `PENDING_CAPTAIN`).
-* `POST /api/v1/teams/{team_id}/invite/{user_id}` — капитан жмет «Пригласить» на карточке свободного участника (создает `PENDING_USER`).
-* `POST /api/v1/team-requests/{request_id}/captain-approve` — капитан одобряет отклик участника (`PENDING_CAPTAIN` $\rightarrow$ `PENDING_USER`).
+* `POST /api/v1/teams/{team_id}/apply` — участник нажимает «Откликнуться» на карточке команды (тело запроса опционально: `message?: str`, отклик подается на команду целиком без выбора роли). Создается заявка со статусом `PENDING_CAPTAIN`. Капитан получает уведомление в Telegram с полным профилем кандидата (вуз, группа, специализации, навыки, контакты TG/VK) и его сообщением.
+* `POST /api/v1/teams/{team_id}/invite/{user_id}` — капитан жмет «Пригласить» на карточке свободного участника в каталоге одиночек (тело запроса опционально: `message?: str`, `target_role?: str`). Создается инвайт со статусом `PENDING_USER`.
+* `POST /api/v1/team-requests/{request_id}/captain-approve` — капитан одобряет отклик участника после знакомства/собеседования в Telegram (`PENDING_CAPTAIN` $\rightarrow$ `PENDING_USER`).
 * `POST /api/v1/team-requests/{request_id}/user-confirm` — финальное подтверждение вступления самим участником (`PENDING_USER` $\rightarrow$ `ACCEPTED`).
 * `POST /api/v1/team-requests/{request_id}/reject` — отклонение или отмена заявки капитаном или участником (`REJECTED` / `CANCELLED`).
 
@@ -534,9 +546,9 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 * **Шаг 2 (перечисления и доменные ошибки):**
   > *Промпт:* «По разделу 4.1 и 5 из `@SPEC.md` создай файл `backend/src/models/enums.py` со всеми `Enum` классами (наследуй их от `str, enum.Enum`) и файл `backend/src/utils/exceptions.py` с кастомными исключениями (`DomainError`, `EntityNotFoundError`, `PermissionDeniedError`, `TeamIsFullError`, `AlreadyInTeamError`, `DeadlinePassedError`, `InvalidStateError`)».
 * **Шаг 3 (модель User под `fastapi-users`):**
-  > *Промпт:* «По разделу 4.2 (Таблица 1) из `@SPEC.md` создай модель `backend/src/models/user.py` (удалив старый общий `models.py`). Наследуй класс `User` от `SQLAlchemyBaseUserTableUUID` и `Base` из `src.database.database`. Используй синтаксис SQLAlchemy 2.0 (`Mapped`, `mapped_column`) и тип `ARRAY(String)` из `sqlalchemy.dialects.postgresql` для поля `skills`».
+  > *Промпт:* «По разделу 4.2 (Таблица 1) из `@SPEC.md` создай модель `backend/src/models/user.py` (удалив старый общий `models.py`). Наследуй класс `User` от `SQLAlchemyBaseUserTableUUID` и `Base` из `src.database.database`. Используй синтаксис SQLAlchemy 2.0 (`Mapped`, `mapped_column`) и тип `ARRAY(String)` из `sqlalchemy.dialects.postgresql` для полей `skills` и `specializations`».
 * **Шаг 4 (модели Event, Team, Registration, Request, Submission):**
-  > *Промпт:* «По разделу 4.2 (Таблицы 2–6) из `@SPEC.md` создай файлы `backend/src/models/event.py`, `backend/src/models/team.py`, `backend/src/models/submission.py` и экспортируй все модели в `backend/src/models/__init__.py`. Строго соблюдай внешние ключи, `UniqueConstraint` для `event_registrations` и типы `JSONB` / `ARRAY`».
+  > *Промпт:* «По разделу 4.2 (Таблицы 2–6) из `@SPEC.md` создай файлы `backend/src/models/event.py`, `backend/src/models/team.py`, `backend/src/models/submission.py` и экспортируй все модели в `backend/src/models/__init__.py`. Строго соблюдай внешние ключи, `UniqueConstraint` для `event_registrations`, опциональные `target_role` и `message` в `team_requests`, и типы `JSONB` / `ARRAY`».
 * **Шаг 5 (настройка Alembic и первая миграция):**
   > *Промпт:* «Обнови `backend/src/migrations/env.py` для Alembic так, чтобы он импортировал `Base.metadata` из `src.models`. Напиши `docker-compose.yml` для локального запуска базы PostgreSQL 16 и проверь создание первой ревизии Alembic».
 
@@ -544,7 +556,7 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 * **Шаг 6 (обновление `repository.py` и создание `uow.py`):**
   > *Промпт:* «По разделу 3.3 из `@SPEC.md` обнови `backend/src/utils/repository.py` так, чтобы `SQLAlchemyRepository` принимал `session: AsyncSession` в `__init__` и НЕ вызывал `session.commit()` внутри методов. Создай `backend/src/repositories/user_repo.py` и файл `backend/src/utils/uow.py` с классом `UnitOfWork`».
 * **Шаг 7 (схемы и настройка `src/auth/` для `fastapi-users`):**
-  > *Промпт:* «По разделам 4.2 и 6.1 из `@SPEC.md` обнови файлы в папке `backend/src/auth/`: в `schemas.py` реализуй `UserRead`, `UserCreate`, `UserUpdate` со всеми кастомными полями профиля; в `database.py` настрой `get_user_db` (импортируя сессию из `src.database.database`); в `manager.py` и `auth.py` настрой `UserManager`, `JWTStrategy` и объект `fastapi_users`».
+  > *Промпт:* «По разделам 4.2 и 6.1 из `@SPEC.md` обнови файлы в папке `backend/src/auth/`: в `schemas.py` реализуй `UserRead`, `UserCreate`, `UserUpdate` со всеми кастомными полями профиля (`skills`, `specializations`); в `database.py` настрой `get_user_db` (импортируя сессию из `src.database.database`); в `manager.py` и `auth.py` настрой `UserManager`, `JWTStrategy` и объект `fastapi_users`».
 * **Шаг 8 (зависимости `dependencies.py` и `UserServices`):**
   > *Промпт:* «По разделу 3.3 из `@SPEC.md` обнови `backend/src/services/user_services.py` так, чтобы конструктор `__init__(self, uow: IUnitOfWork)` принимал `uow` и сохранял его в `self.uow` (добавь метод генерации токена привязки ТГ). В `backend/src/api/dependencies.py` настрой фабрику `get_uow`, `user_service(uow = Depends(get_uow))`, а также зависимости проверки ролей `require_organizer` и `require_admin`».
 * **Шаг 9 (роутер пользователей и глобальный обработчик ошибок):**
@@ -552,7 +564,7 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 
 ### Фаза 3: События, Афиша и Регистрация на хакатон
 * **Шаг 10 (схемы и репозитории для Event и EventRegistration):**
-  > *Промпт:* «По разделам 4.2 и 6.2 из `@SPEC.md` создай Pydantic-схемы в `backend/src/schemas/event.py` и репозитории `backend/src/repositories/event_repo.py` (поиск по `id` или `invite_code`, фильтрация публичных и `is_featured` ивентов) и `backend/src/repositories/registration_repo.py` (выборка одиночек с `team_id IS NULL` и фильтрацией по тегам). Подключи оба репозитория в `UnitOfWork` (`src/utils/uow.py`)».
+  > *Промпт:* «По разделам 4.2 и 6.2 из `@SPEC.md` создай Pydantic-схемы в `backend/src/schemas/event.py` и репозитории `backend/src/repositories/event_repo.py` (поиск по `id` или `invite_code`, фильтрация публичных и `is_featured` ивентов) и `backend/src/repositories/registration_repo.py` (выборка одиночек с `team_id IS NULL` и фильтрацией по пересечению тегов со `specializations` и `skills`). Подключи оба репозитория в `UnitOfWork` (`src/utils/uow.py`)».
 * **Шаг 11 (сервис и роутер событий):**
   > *Промпт:* «По разделу 6.2 из `@SPEC.md` создай `backend/src/services/event_services.py` (с `self.uow` в `__init__`), зарегистрируй `event_service` в `src/api/dependencies.py` и создай роутер `backend/src/api/event_router.py` (каталог событий на главной, детальная страница по `id` или `invite_code`, регистрация студента на событие `POST /events/{id}/register`, каталог свободных участников `GET /events/{id}/solo-participants` и роут `GET /users/me/events`)».
 
@@ -566,7 +578,7 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 
 ### Фаза 5: Пайплайн заявок и приглашений (Двойное подтверждение)
 * **Шаг 15 (репозиторий и логика `team_requests`):**
-  > *Промпт:* «По разделам 2.4, 5.1 и 6.4 из `@SPEC.md` создай `backend/src/repositories/request_repo.py` (включая метод массовой отмены остальных активных заявок пользователя `cancel_other_user_requests`) и добавь его в `UnitOfWork`. Допиши в `backend/src/services/team_services.py` методы: `apply_to_team`, `invite_user_to_team`, `captain_approve_request`, `user_confirm_request` (с `with_for_update()` и удалением закрытой роли из `needed_roles`) и `reject_request`».
+  > *Промпт:* «По разделам 2.4, 5.1 и 6.4 из `@SPEC.md` создай `backend/src/repositories/request_repo.py` (включая метод массовой отмены остальных активных заявок пользователя `cancel_other_user_requests`) и добавь его в `UnitOfWork`. Допиши в `backend/src/services/team_services.py` методы: `apply_to_team` (подача заявки целиком на команду с опциональным `message`), `invite_user_to_team`, `captain_approve_request`, `user_confirm_request` (с `with_for_update()` и сопоставлением закрытых позиций в `needed_roles` по специализациям и навыкам кандидата) и `reject_request`».
 * **Шаг 16 (роутер заявок и инвайтов):**
   > *Промпт:* «По разделу 6.4 из `@SPEC.md` создай роутер `backend/src/api/request_router.py` (включая `GET /events/{event_id}/my-requests`) и подключи его в `src/main.py`».
 
@@ -578,9 +590,9 @@ await service.captain_approve_request(request_id=req_id, captain_id=captain.id)
 
 ### Фаза 7: Суперсилы организатора (Умный матчинг, Репозитории, Excel)
 * **Шаг 19 (алгоритм «умного матчинга» одиночек):**
-  > *Промпт:* «По разделу 5.3 из `@SPEC.md` реализуй `backend/src/services/matching_services.py` (с `self.uow` в `__init__`). Напиши жадный алгоритм доукомплектования существующих команд с `allow_auto_match=True` по пересечению `needed_roles` и `skills`, а затем формирование новых сбалансированных команд (`AutoTeam #N`) по принципу Round-Robin из оставшихся одиночек».
+  > *Промпт:* «По разделу 5.3 из `@SPEC.md` реализуй `backend/src/services/matching_services.py` (с `self.uow` в `__init__`). Напиши жадный алгоритм доукомплектования существующих команд с `allow_auto_match=True` по пересечению `needed_roles` с объединением `specializations` и `skills`, а затем формирование новых сбалансированных команд (`AutoTeam #N`) по принципу Round-Robin из оставшихся одиночек».
 * **Шаг 20 (сдача проектов с дедлайном и экспорт в Excel):**
-  > *Промпт:* «По разделам 5.4 и 6.5 из `@SPEC.md` создай `backend/src/schemas/submission.py`, `backend/src/repositories/submission_repo.py` (добавь в `UnitOfWork`) и `backend/src/services/export_services.py` (генерация красивого `.xlsx` файла через `openpyxl` со столбцами: Команда, Капитан, ФИО участника, Роль, Вуз, Группа, Курс, Telegram, Email, Ссылка на GitHub, Презентация)».
+  > *Промпт:* «По разделам 5.4 и 6.5 из `@SPEC.md` создай `backend/src/schemas/submission.py`, `backend/src/repositories/submission_repo.py` (добавь в `UnitOfWork`) и `backend/src/services/export_services.py` (генерация красивого `.xlsx` файла через `openpyxl` со столбцами: Команда, Капитан, ФИО участника, Специализации, Навыки, Вуз, Группа, Курс, Telegram, Email, Ссылка на GitHub, Презентация)».
 * **Шаг 21 (панель организатора и God Mode):**
   > *Промпт:* «По разделу 6.5 из `@SPEC.md` создай роутер `backend/src/api/organizer_router.py` (защищенный зависимостью `require_organizer`): создание/редактирование события, запуск `auto-match`, ручное перемещение участника `force-assign`, массовая рассылка в ТГ `broadcast` и скачивание Excel-отчета `StreamingResponse`».
 * **Шаг 22 (Docker, тесты и CI/CD):**

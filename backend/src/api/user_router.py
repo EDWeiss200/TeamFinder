@@ -1,12 +1,16 @@
 """Роутер для работы с профилями пользователей."""
 
 import uuid
+from typing import List
+
 from fastapi import APIRouter, Depends
 
-from api.dependencies import user_service
+from api.dependencies import event_service, user_service
 from auth.auth import current_user
-from auth.schemas import UserRead, UserUpdate
+from auth.schemas import UserPasswordChange, UserRead, UserUpdate
 from models.user import User
+from schemas.event import UserEventItemRead
+from services.event_services import EventServices
 from services.user_services import UserServices
 
 router = APIRouter(
@@ -43,6 +47,20 @@ async def update_current_user_profile(
 
 
 @router.post(
+    "/me/change-password",
+    summary="Сменить пароль текущего пользователя",
+)
+async def change_current_user_password(
+    password_data: UserPasswordChange,
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Безопасная смена пароля с обязательным подтверждением старого пароля."""
+    await service.change_password(user.id, password_data)
+    return {"detail": "Пароль успешно изменен"}
+
+
+@router.post(
     "/me/telegram-bind-link",
     summary="Сгенерировать ссылку для привязки Telegram-бота",
 )
@@ -53,6 +71,29 @@ async def create_telegram_bind_link(
     """Генерирует секретную deep-link ссылку для привязки аккаунта в Telegram."""
     link = await service.generate_telegram_bind_link(user.id)
     return {"bind_url": link}
+
+
+@router.get(
+    "/me/events",
+    response_model=List[UserEventItemRead],
+    summary="Список мероприятий текущего пользователя",
+)
+async def get_my_events(
+    user: User = Depends(current_user),
+    service: EventServices = Depends(event_service),
+):
+    """Возвращает мероприятия, на которые зарегистрирован текущий пользователь.
+
+    Используется для блока «Ваши события» в профиле и виджета на главной.
+    """
+    registrations = await service.get_user_events(user_id=user.id)
+    return [
+        UserEventItemRead(
+            event=reg.event,
+            registration=reg,
+        )
+        for reg in registrations
+    ]
 
 
 @router.get(
