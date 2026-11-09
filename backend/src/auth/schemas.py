@@ -7,7 +7,7 @@ from typing import List, Optional
 from fastapi_users import schemas
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.enums import UserRole
+from models.enums import ParticipantSpecialization, UserRole
 
 
 class UserRead(schemas.BaseUser[uuid.UUID]):
@@ -22,7 +22,7 @@ class UserRead(schemas.BaseUser[uuid.UUID]):
     course: Optional[int] = None
     bio: Optional[str] = None
     skills: List[str] = []
-    specializations: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
     vk_url: Optional[str] = None
     github_url: Optional[str] = None
     telegram_id: Optional[int] = None
@@ -42,7 +42,7 @@ class UserCreate(schemas.BaseUserCreate):
     study_group: Optional[str] = None
     course: Optional[int] = None
     skills: List[str] = []
-    specializations: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
 
 
 class UserUpdate(BaseModel):
@@ -56,7 +56,7 @@ class UserUpdate(BaseModel):
     course: Optional[int] = None
     bio: Optional[str] = None
     skills: Optional[List[str]] = None
-    specializations: Optional[List[str]] = None
+    specializations: Optional[List[ParticipantSpecialization]] = None
     vk_url: Optional[str] = None
     github_url: Optional[str] = None
 

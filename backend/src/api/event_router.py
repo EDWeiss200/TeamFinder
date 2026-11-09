@@ -9,6 +9,7 @@ from api.dependencies import event_service
 from auth.auth import current_user, fastapi_users
 from models.enums import EventStatus
 from models.user import User
+from schemas.common import PaginatedResponse
 from schemas.event import (
     EventDetailRead,
     EventRead,
@@ -34,7 +35,7 @@ current_user_or_none = fastapi_users.current_user(active=True, optional=True)
 
 @router.get(
     "",
-    response_model=List[EventRead],
+    response_model=PaginatedResponse[EventRead],
     summary="Каталог публичных мероприятий на главной странице",
 )
 async def get_events_catalog(
@@ -46,16 +47,23 @@ async def get_events_catalog(
         default=None,
         description="Фильтр по статусу мероприятия",
     ),
-    limit: int = Query(default=100, ge=1, le=500, description="Лимит записей"),
-    offset: int = Query(default=0, ge=0, description="Смещение"),
+    page: int = Query(default=1, ge=1, description="Номер страницы"),
+    size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
+    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
+    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
     service: EventServices = Depends(event_service),
 ):
-    """Возвращает список публичных мероприятий для главной страницы с фильтрацией и пагинацией."""
+    """Возвращает пагинированный список публичных мероприятий для главной страницы с фильтрацией."""
+    if limit is not None:
+        size = limit
+        if offset is not None:
+            page = (offset // limit) + 1
+
     return await service.get_public_events(
         is_featured=is_featured,
         status=status,
-        limit=limit,
-        offset=offset,
+        page=page,
+        size=size,
     )
 
 
@@ -115,7 +123,7 @@ async def register_for_event(
 ):
     """Регистрирует текущего пользователя на мероприятие.
 
-    Сохраняет ответы на вопросы анкеты мероприятия (custom_answers).
+    Сохраняет и валидирует ответы на вопросы анкеты мероприятия (custom_answers).
     """
     return await service.register_for_event(
         event_id=event_id,
@@ -131,27 +139,53 @@ async def register_for_event(
 
 @router.get(
     "/{event_id}/solo-participants",
-    response_model=List[SoloParticipantRead],
+    response_model=PaginatedResponse[SoloParticipantRead],
     summary="Каталог свободных участников без команды",
 )
 async def get_solo_participants(
     event_id: uuid.UUID,
+    specialization: Optional[str] = Query(
+        default=None,
+        description="Фильтр по специализации (например: frontend, backend)",
+    ),
+    skills: Optional[List[str]] = Query(
+        default=None,
+        description="Фильтр по списку навыков (стек: React, Docker)",
+    ),
     tags: Optional[List[str]] = Query(
         default=None,
-        description="Фильтр по списку тегов компетенций (стек, роли)",
+        description="Универсальный фильтр по тегам (роли и навыки)",
     ),
-    limit: int = Query(default=100, ge=1, le=500, description="Лимит записей"),
-    offset: int = Query(default=0, ge=0, description="Смещение"),
+    page: int = Query(default=1, ge=1, description="Номер страницы"),
+    size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
+    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
+    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
     user: User = Depends(current_user),
     service: EventServices = Depends(event_service),
 ):
-    """Возвращает список свободных участников мероприятия (team_id IS NULL).
+    """Возвращает пагинированный список свободных участников мероприятия (team_id IS NULL).
 
     Используется на экране «Пригласить участников в команду».
     """
+    if limit is not None:
+        size = limit
+        if offset is not None:
+            page = (offset // limit) + 1
+
+    # Объединяем фильтры для гибкого поиска
+    search_tags: List[str] = []
+    if specialization:
+        search_tags.append(specialization)
+    if skills:
+        search_tags.extend(skills)
+    if tags:
+        search_tags.extend(tags)
+
+    filter_tags = list(set(search_tags)) if search_tags else None
+
     return await service.get_solo_participants(
         event_id=event_id,
-        tags=tags,
-        limit=limit,
-        offset=offset,
+        tags=filter_tags,
+        page=page,
+        size=size,
     )

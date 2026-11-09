@@ -3,7 +3,7 @@
 import uuid
 from typing import List, Optional
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import joinedload
 
 from models.event import EventRegistration
@@ -54,6 +54,33 @@ class EventRegistrationRepository(SQLAlchemyRepository):
         stmt = stmt.order_by(self.model.registered_at.asc()).limit(limit).offset(offset)
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
+
+    async def count_solo_participants(
+        self,
+        event_id: uuid.UUID,
+        tags: Optional[List[str]] = None,
+    ) -> int:
+        """Подсчет общего количества свободных участников с учетом тегов."""
+        stmt = (
+            select(func.count(self.model.id))
+            .join(User, self.model.user_id == User.id)
+            .where(
+                self.model.event_id == event_id,
+                self.model.team_id.is_(None),
+            )
+        )
+
+        if tags:
+            stmt = stmt.where(
+                or_(
+                    User.specializations.overlap(tags),
+                    User.skills.overlap(tags),
+                )
+            )
+
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
 
     async def get_by_event_and_user(
         self,

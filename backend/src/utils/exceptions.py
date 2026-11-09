@@ -49,3 +49,13 @@ class InvalidStateError(DomainError):
 
     def __init__(self, message: str = "Недопустимое состояние для выполнения операции"):
         super().__init__(message)
+
+
+class IncompleteTeamError(DomainError):
+    """Команда не набрала минимально необходимое количество участников."""
+
+    def __init__(
+        self,
+        message: str = "Команда не набрала минимальное количество участников по регламенту мероприятия",
+    ):
+        super().__init__(message)

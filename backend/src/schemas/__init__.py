@@ -1,38 +1,36 @@
-"""Экспорт Pydantic-схем приложения."""
+"""Pydantic DTO схемы приложения."""
 
+from schemas.common import PaginatedResponse
 from schemas.event import (
-    EventBase,
     EventCreate,
     EventDetailRead,
     EventRead,
     EventRegistrationCreate,
     EventRegistrationRead,
-    EventRegistrationUserRead,
     EventUpdate,
     SoloParticipantRead,
     UserEventItemRead,
 )
 from schemas.team import (
-    TeamBase,
     TeamCreate,
     TeamDetailRead,
     TeamMemberRead,
     TeamRead,
     TeamUpdate,
 )
+from schemas.upload import ImageUploadResponse
 
 __all__ = [
-    "EventBase",
+    "PaginatedResponse",
+    "ImageUploadResponse",
     "EventCreate",
     "EventUpdate",
     "EventRead",
     "EventDetailRead",
     "EventRegistrationCreate",
     "EventRegistrationRead",
-    "EventRegistrationUserRead",
     "SoloParticipantRead",
     "UserEventItemRead",
-    "TeamBase",
     "TeamCreate",
     "TeamUpdate",
     "TeamRead",

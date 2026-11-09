@@ -8,6 +8,7 @@ from utils.exceptions import (
     DeadlinePassedError,
     DomainError,
     EntityNotFoundError,
+    IncompleteTeamError,
     InvalidStateError,
     PermissionDeniedError,
     TeamIsFullError,
@@ -49,6 +50,13 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def deadline_passed_handler(request: Request, exc: DeadlinePassedError):
         return JSONResponse(
             status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(IncompleteTeamError)
+    async def incomplete_team_handler(request: Request, exc: IncompleteTeamError):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
             content={"detail": exc.message},
         )
 

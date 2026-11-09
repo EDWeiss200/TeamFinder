@@ -74,6 +74,10 @@ class User(SQLAlchemyBaseUserTableUUID, Base):
         nullable=True,
         index=True,
     )
+    telegram_bind_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
     is_bot_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Аудит

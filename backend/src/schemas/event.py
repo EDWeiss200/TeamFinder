@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from models.enums import EventFormat, EventStatus
+from models.enums import EventFormat, EventStatus, ParticipantSpecialization
 
 
 # =====================================================================
@@ -26,7 +26,7 @@ class EventRegistrationUserRead(BaseModel):
     course: Optional[int] = None
     bio: Optional[str] = None
     skills: List[str] = []
-    specializations: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
     telegram_username: Optional[str] = None
     vk_url: Optional[str] = None
     github_url: Optional[str] = None

@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from models.enums import ParticipantSpecialization
+
 
 # =====================================================================
 # Схемы участников команды
@@ -20,7 +22,7 @@ class TeamMemberRead(BaseModel):
     nickname: Optional[str] = None
     avatar_url: Optional[str] = None
     is_captain: bool = False
-    specializations: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
     skills: List[str] = []
     telegram_username: Optional[str] = None
     joined_team_at: Optional[datetime] = None
@@ -53,9 +55,9 @@ class TeamBase(BaseModel):
         le=50,
         description="Желаемый размер команды, указанный капитаном (в пределах правил хакатона)",
     )
-    needed_roles: List[str] = Field(
+    needed_roles: List[ParticipantSpecialization] = Field(
         default_factory=list,
-        description="Теги ролей и компетенций 'Ищем' (например: ['backend', 'design'])",
+        description="Специализации 'Ищем' строго из перечисления ParticipantSpecialization",
     )
     allow_auto_match: bool = Field(
         default=True,
@@ -99,9 +101,9 @@ class TeamUpdate(BaseModel):
         le=50,
         description="Новый желаемый размер команды",
     )
-    needed_roles: Optional[List[str]] = Field(
+    needed_roles: Optional[List[ParticipantSpecialization]] = Field(
         default=None,
-        description="Обновленный список искомых тегов/ролей 'Ищем'",
+        description="Обновленный список специализаций 'Ищем'",
     )
     allow_auto_match: Optional[bool] = Field(
         default=None,
@@ -123,8 +125,8 @@ class TeamRead(BaseModel):
     description: Optional[str] = None
     captain_id: uuid.UUID
     max_members: int
-    needed_roles: List[str] = []
-    existing_roles: List[str] = []
+    needed_roles: List[ParticipantSpecialization] = []
+    existing_roles: List[ParticipantSpecialization] = []
     members_count: int = 0
     members: List[TeamMemberRead] = []
     allow_auto_match: bool
@@ -167,8 +169,8 @@ class TeamRead(BaseModel):
                         }
                     )
 
-                    # Собираем компетенции участников в 'Уже есть' (без дубликатов с сохранением порядка)
-                    for tag in list(user_specs) + list(user_skills):
+                    # Собираем канонические специализации участников в 'Уже есть' (строго user_specs, без skills)
+                    for tag in list(user_specs):
                         if tag and tag not in existing_roles_seen:
                             existing_roles_seen.add(tag)
                             existing_roles_list.append(tag)

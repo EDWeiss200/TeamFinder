@@ -5,6 +5,7 @@ from auth.auth import current_user
 from models.enums import UserRole
 from models.user import User
 from services.event_services import EventServices
+from services.upload_services import UploadServices
 from services.user_services import UserServices
 from utils.exceptions import PermissionDeniedError
 from utils.uow import IUnitOfWork, UnitOfWork
@@ -23,6 +24,11 @@ def user_service(uow: IUnitOfWork = Depends(get_uow)) -> UserServices:
 def event_service(uow: IUnitOfWork = Depends(get_uow)) -> EventServices:
     """Провайдер сервиса мероприятий с инъекцией Unit of Work."""
     return EventServices(uow)
+
+
+def upload_service() -> UploadServices:
+    """Провайдер сервиса загрузки медиа-файлов."""
+    return UploadServices()
 
 
 async def require_organizer(user: User = Depends(current_user)) -> User:

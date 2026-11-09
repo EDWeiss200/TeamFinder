@@ -1,9 +1,12 @@
 """Паттерн Unit of Work для управления транзакциями базы данных."""
 
 from abc import ABC, abstractmethod
+
 from database.database import async_session_maker
 from repositories.event_repo import EventRepository
 from repositories.registration_repo import EventRegistrationRepository
+from repositories.request_repo import RequestRepository
+from repositories.submission_repo import SubmissionRepository
 from repositories.team_repo import TeamRepository
 from repositories.user_repo import UserRepository
 
@@ -15,6 +18,8 @@ class IUnitOfWork(ABC):
     events: EventRepository
     registrations: EventRegistrationRepository
     teams: TeamRepository
+    requests: RequestRepository
+    submissions: SubmissionRepository
 
     @abstractmethod
     def __init__(self): ...
@@ -45,6 +50,8 @@ class UnitOfWork(IUnitOfWork):
         self.events = EventRepository(self.session)
         self.registrations = EventRegistrationRepository(self.session)
         self.teams = TeamRepository(self.session)
+        self.requests = RequestRepository(self.session)
+        self.submissions = SubmissionRepository(self.session)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

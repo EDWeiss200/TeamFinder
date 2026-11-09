@@ -1,5 +1,6 @@
 """Сервисный слой для работы с профилями пользователей и привязкой Telegram."""
 
+from datetime import datetime, timedelta, timezone
 import secrets
 import uuid
 from typing import Optional
@@ -66,14 +67,21 @@ class UserServices:
             await self.uow.commit()
 
     async def generate_telegram_bind_link(self, user_id: uuid.UUID) -> str:
-        """Сгенерировать одноразовую deep-link ссылку для привязки Telegram-бота."""
+        """Сгенерировать одноразовую deep-link ссылку для привязки Telegram-бота с TTL 15 минут."""
         async with self.uow:
             user = await self.uow.users.find_one_or_none(id=user_id)
             if not user:
                 raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
 
             bind_token = f"bind_{secrets.token_hex(16)}"
-            await self.uow.users.update(user_id, {"telegram_bind_token": bind_token})
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+            await self.uow.users.update(
+                user_id,
+                {
+                    "telegram_bind_token": bind_token,
+                    "telegram_bind_token_expires_at": expires_at,
+                },
+            )
             await self.uow.commit()
 
             bot_name = BOT_USERNAME.lstrip("@")
@@ -93,6 +101,14 @@ class UserServices:
                     "Недействительный или истекший токен привязки Telegram"
                 )
 
+            # Проверяем срок жизни токена (TTL 15 минут)
+            if user.telegram_bind_token_expires_at:
+                now = datetime.now(timezone.utc)
+                if now > user.telegram_bind_token_expires_at:
+                    raise InvalidStateError(
+                        "Срок действия токена привязки Telegram истек (15 минут). Запросите новую ссылку в личном кабинете."
+                    )
+
             # Проверяем, не привязан ли этот Telegram ID к другому пользователю
             existing_user = await self.uow.users.find_one_or_none(
                 telegram_id=telegram_id
@@ -107,6 +123,7 @@ class UserServices:
                 "telegram_username": telegram_username,
                 "is_bot_active": True,
                 "telegram_bind_token": None,
+                "telegram_bind_token_expires_at": None,
             }
             updated_user = await self.uow.users.update(user.id, update_data)
             await self.uow.commit()

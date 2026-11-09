@@ -3,7 +3,7 @@
 import uuid
 from typing import List, Optional, Union
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from models.enums import EventStatus
 from models.event import Event
@@ -62,3 +62,21 @@ class EventRepository(SQLAlchemyRepository):
         stmt = stmt.order_by(self.model.event_start.asc()).limit(limit).offset(offset)
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
+
+    async def count_public_events(
+        self,
+        is_featured: Optional[bool] = None,
+        status: Optional[EventStatus] = None,
+    ) -> int:
+        """Подсчет общего количества публичных мероприятий с учетом фильтров."""
+        stmt = select(func.count(self.model.id)).where(self.model.is_public.is_(True))
+
+        if is_featured is not None:
+            stmt = stmt.where(self.model.is_featured == is_featured)
+
+        if status is not None:
+            stmt = stmt.where(self.model.status == status)
+
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+

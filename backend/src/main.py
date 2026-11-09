@@ -1,21 +1,29 @@
+from pathlib import Path
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.event_router import router as event_router
 from api.exception_handlers import register_exception_handlers
+from api.upload_router import router as upload_router
 from api.user_router import router as user_router
 from auth.auth import auth_backend, bearer_backend, fastapi_users
 from auth.schemas import UserCreate, UserRead
 from config import FRONTEND_URLS
 
 app = FastAPI(
-    title="HackFlow API",
+    title="TeamFinder API",
     description="Платформа автоматизации хакатонов, формирования команд и умного матчинга",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+# Монтирование директории статики для загружаемых медиа (аватарки, баннеры)
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Настройка CORS для взаимодействия с фронтендом
 app.add_middleware(
@@ -53,6 +61,12 @@ app.include_router(
 # Роутер пользователей и профилей
 app.include_router(
     user_router,
+    prefix="/api/v1",
+)
+
+# Роутер загрузки изображений
+app.include_router(
+    upload_router,
     prefix="/api/v1",
 )
 

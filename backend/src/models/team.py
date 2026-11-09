@@ -8,10 +8,12 @@ from sqlalchemy import (
     Boolean,
     Enum as SQLEnum,
     ForeignKey,
+    Index,
     SmallInteger,
     String,
     Text,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -95,6 +97,15 @@ class TeamRequest(Base):
     """Заявка участника в команду или приглашение от капитана."""
 
     __tablename__ = "team_requests"
+    __table_args__ = (
+        Index(
+            "uq_active_team_user_request",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status IN ('pending_captain', 'pending_user')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
