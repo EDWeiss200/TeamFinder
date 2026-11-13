@@ -1,0 +1,3977 @@
+=== FILE: backend\src\config.py ===
+"""Конфигурация приложения."""
+
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Ищем .env рядом с config.py (backend/src/.env) или в корне backend/
+current_dir = Path(__file__).resolve().parent
+load_dotenv(current_dir / ".env")
+load_dotenv(current_dir.parent / ".env")
+load_dotenv()
+
+DB_HOST = os.environ.get("DB_HOST", "localhost")
+DB_USER = os.environ.get("DB_USER", "postgres")
+DB_PASS = os.environ.get("DB_PASS", "postgres")
+DB_NAME = os.environ.get("DB_NAME", "teamtinder")
+DB_PORT = os.environ.get("DB_PORT", "5432")
+
+SECRET_AUTH = os.environ.get("SECRET_AUTH", "DEV_SECRET_AUTH_KEY_1234567890")
+SECRET_USER_MANAGER = os.environ.get(
+    "SECRET_USER_MANAGER", "DEV_SECRET_USER_MANAGER_KEY_1234567890"
+)
+
+# Настройки Cookie: для локальной разработки без HTTPS устанавливается False
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "False").lower() in ("true", "1", "t")
+
+# Токен Telegram-бота
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_USERNAME = os.environ.get("BOT_USERNAME", "TeamFinderBot")
+
+# Разрешенные CORS-домены
+FRONTEND_URLS = os.environ.get(
+    "FRONTEND_URLS",
+    "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000",
+).split(",")
+
+DATABASE_URL_CONFIG = (
+    f"postgresql+asyncpg://{DB_USER}:{DB_PASS}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+)
+
+
+=== FILE: backend\src\main.py ===
+from pathlib import Path
+import uvicorn
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from api.event_router import router as event_router
+from api.exception_handlers import register_exception_handlers
+from api.upload_router import router as upload_router
+from api.user_router import router as user_router
+from auth.auth import auth_backend, bearer_backend, fastapi_users
+from auth.schemas import UserCreate, UserRead
+from config import FRONTEND_URLS
+
+app = FastAPI(
+    title="TeamFinder API",
+    description="Платформа автоматизации хакатонов, формирования команд и умного матчинга",
+    version="1.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+)
+
+# Монтирование директории статики для загружаемых медиа (аватарки, баннеры)
+STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
+STATIC_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+
+# Настройка CORS для взаимодействия с фронтендом
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=FRONTEND_URLS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Регистрация глобальных обработчиков доменных ошибок
+register_exception_handlers(app)
+
+# Роутеры аутентификации (Cookie-транспорт)
+app.include_router(
+    fastapi_users.get_auth_router(auth_backend),
+    prefix="/api/v1/auth/jwt",
+    tags=["Auth"],
+)
+
+# Роутеры аутентификации (Bearer Token транспорт для мобильных устройств и тестов)
+app.include_router(
+    fastapi_users.get_auth_router(bearer_backend),
+    prefix="/api/v1/auth/bearer",
+    tags=["Auth"],
+)
+
+# Роутер регистрации новых пользователей
+app.include_router(
+    fastapi_users.get_register_router(UserRead, UserCreate),
+    prefix="/api/v1/auth",
+    tags=["Auth"],
+)
+
+# Роутер пользователей и профилей
+app.include_router(
+    user_router,
+    prefix="/api/v1",
+)
+
+# Роутер загрузки изображений
+app.include_router(
+    upload_router,
+    prefix="/api/v1",
+)
+
+# Роутер мероприятий и каталога
+app.include_router(
+    event_router,
+    prefix="/api/v1",
+)
+
+
+@app.get("/", tags=["Root"])
+async def root():
+    """Корневой эндпоинт со ссылкой на документацию."""
+    return {
+        "message": "TeamFinder API is running",
+        "docs_url": "/docs",
+        "health_check": "/health",
+    }
+
+
+@app.get("/health", tags=["Health"])
+async def health_check():
+    """Проверка жизнеспособности сервиса."""
+    return {"status": "ok", "service": "TeamFinder API"}
+
+
+if __name__ == "__main__":
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
+
+=== FILE: backend\src\api\dependencies.py ===
+"""Фабрики зависимостей и проверки прав доступа."""
+
+from fastapi import Depends
+from auth.auth import current_user
+from models.enums import UserRole
+from models.user import User
+from services.event_services import EventServices
+from services.upload_services import UploadServices
+from services.user_services import UserServices
+from utils.exceptions import PermissionDeniedError
+from utils.uow import IUnitOfWork, UnitOfWork
+
+
+def get_uow() -> IUnitOfWork:
+    """Провайдер Unit of Work."""
+    return UnitOfWork()
+
+
+def user_service(uow: IUnitOfWork = Depends(get_uow)) -> UserServices:
+    """Провайдер сервиса пользователей с инъекцией Unit of Work."""
+    return UserServices(uow)
+
+
+def event_service(uow: IUnitOfWork = Depends(get_uow)) -> EventServices:
+    """Провайдер сервиса мероприятий с инъекцией Unit of Work."""
+    return EventServices(uow)
+
+
+def upload_service() -> UploadServices:
+    """Провайдер сервиса загрузки медиа-файлов."""
+    return UploadServices()
+
+
+async def require_organizer(user: User = Depends(current_user)) -> User:
+    """Проверка прав: пользователь должен обладать ролью ORGANIZER или ADMIN (или быть superuser)."""
+    if user.role not in (UserRole.ORGANIZER, UserRole.ADMIN) and not user.is_superuser:
+        raise PermissionDeniedError(
+            "Доступ разрешен только организаторам и администраторам"
+        )
+    return user
+
+
+async def require_admin(user: User = Depends(current_user)) -> User:
+    """Проверка прав: пользователь должен обладать ролью ADMIN (или быть superuser)."""
+    if user.role != UserRole.ADMIN and not user.is_superuser:
+        raise PermissionDeniedError("Доступ разрешен только супер-администраторам")
+    return user
+
+
+=== FILE: backend\src\api\event_router.py ===
+"""Роутер мероприятий и каталога на главной странице."""
+
+import uuid
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, Query
+
+from api.dependencies import event_service
+from auth.auth import current_user, fastapi_users
+from models.enums import EventStatus
+from models.user import User
+from schemas.common import PaginatedResponse
+from schemas.event import (
+    EventDetailRead,
+    EventRead,
+    EventRegistrationCreate,
+    EventRegistrationRead,
+    SoloParticipantRead,
+)
+from services.event_services import EventServices
+
+router = APIRouter(
+    prefix="/events",
+    tags=["Events"],
+)
+
+# Опциональная аутентификация: current_user_or_none будет None для анонимных запросов
+current_user_or_none = fastapi_users.current_user(active=True, optional=True)
+
+
+# ------------------------------------------------------------------
+# GET /events — каталог публичных мероприятий на главной
+# ------------------------------------------------------------------
+
+
+@router.get(
+    "",
+    response_model=PaginatedResponse[EventRead],
+    summary="Каталог публичных мероприятий на главной странице",
+)
+async def get_events_catalog(
+    is_featured: Optional[bool] = Query(
+        default=None,
+        description="Фильтр для верхнего слайдера (баннеры на главной)",
+    ),
+    status: Optional[EventStatus] = Query(
+        default=None,
+        description="Фильтр по статусу мероприятия",
+    ),
+    page: int = Query(default=1, ge=1, description="Номер страницы"),
+    size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
+    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
+    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
+    service: EventServices = Depends(event_service),
+):
+    """Возвращает пагинированный список публичных мероприятий для главной страницы с фильтрацией."""
+    if limit is not None:
+        size = limit
+        if offset is not None:
+            page = (offset // limit) + 1
+
+    return await service.get_public_events(
+        is_featured=is_featured,
+        status=status,
+        page=page,
+        size=size,
+    )
+
+
+# ------------------------------------------------------------------
+# GET /events/{event_id_or_invite_code} — детальная страница
+# ------------------------------------------------------------------
+
+
+@router.get(
+    "/{event_id_or_invite_code}",
+    response_model=EventDetailRead,
+    summary="Детальная страница мероприятия",
+)
+async def get_event_detail(
+    event_id_or_invite_code: str,
+    user: Optional[User] = Depends(current_user_or_none),
+    service: EventServices = Depends(event_service),
+):
+    """Возвращает полную информацию о мероприятии.
+
+    Для авторизованного пользователя также включает поле my_registration
+    (зарегистрирован ли он и в какой команде состоит).
+    """
+    current_user_id = user.id if user else None
+    result = await service.get_event_detail(
+        identifier=event_id_or_invite_code,
+        current_user_id=current_user_id,
+    )
+
+    # Собираем ответ в формате EventDetailRead
+    event = result["event"]
+    return EventDetailRead.model_validate(
+        event,
+        from_attributes=True,
+    ).model_copy(
+        update={
+            "my_registration": result["my_registration"],
+        }
+    )
+
+
+# ------------------------------------------------------------------
+# POST /events/{event_id}/register — регистрация участника
+# ------------------------------------------------------------------
+
+
+@router.post(
+    "/{event_id}/register",
+    response_model=EventRegistrationRead,
+    summary="Регистрация участника на мероприятие",
+)
+async def register_for_event(
+    event_id: uuid.UUID,
+    registration_data: EventRegistrationCreate,
+    user: User = Depends(current_user),
+    service: EventServices = Depends(event_service),
+):
+    """Регистрирует текущего пользователя на мероприятие.
+
+    Сохраняет и валидирует ответы на вопросы анкеты мероприятия (custom_answers).
+    """
+    return await service.register_for_event(
+        event_id=event_id,
+        user_id=user.id,
+        registration_data=registration_data,
+    )
+
+
+# ------------------------------------------------------------------
+# GET /events/{event_id}/solo-participants — каталог одиночек
+# ------------------------------------------------------------------
+
+
+@router.get(
+    "/{event_id}/solo-participants",
+    response_model=PaginatedResponse[SoloParticipantRead],
+    summary="Каталог свободных участников без команды",
+)
+async def get_solo_participants(
+    event_id: uuid.UUID,
+    specialization: Optional[str] = Query(
+        default=None,
+        description="Фильтр по специализации (например: frontend, backend)",
+    ),
+    skills: Optional[List[str]] = Query(
+        default=None,
+        description="Фильтр по списку навыков (стек: React, Docker)",
+    ),
+    tags: Optional[List[str]] = Query(
+        default=None,
+        description="Универсальный фильтр по тегам (роли и навыки)",
+    ),
+    page: int = Query(default=1, ge=1, description="Номер страницы"),
+    size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
+    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
+    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
+    user: User = Depends(current_user),
+    service: EventServices = Depends(event_service),
+):
+    """Возвращает пагинированный список свободных участников мероприятия (team_id IS NULL).
+
+    Используется на экране «Пригласить участников в команду».
+    """
+    if limit is not None:
+        size = limit
+        if offset is not None:
+            page = (offset // limit) + 1
+
+    # Объединяем фильтры для гибкого поиска
+    search_tags: List[str] = []
+    if specialization:
+        search_tags.append(specialization)
+    if skills:
+        search_tags.extend(skills)
+    if tags:
+        search_tags.extend(tags)
+
+    filter_tags = list(set(search_tags)) if search_tags else None
+
+    return await service.get_solo_participants(
+        event_id=event_id,
+        tags=filter_tags,
+        page=page,
+        size=size,
+    )
+
+
+=== FILE: backend\src\api\exception_handlers.py ===
+"""Глобальные обработчики доменных ошибок для FastAPI."""
+
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
+
+from utils.exceptions import (
+    AlreadyInTeamError,
+    DeadlinePassedError,
+    DomainError,
+    EntityNotFoundError,
+    IncompleteTeamError,
+    InvalidStateError,
+    PermissionDeniedError,
+    TeamIsFullError,
+)
+
+
+def register_exception_handlers(app: FastAPI) -> None:
+    """Регистрация обработчиков исключений доменной логики в приложении FastAPI."""
+
+    @app.exception_handler(EntityNotFoundError)
+    async def entity_not_found_handler(request: Request, exc: EntityNotFoundError):
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(PermissionDeniedError)
+    async def permission_denied_handler(request: Request, exc: PermissionDeniedError):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(TeamIsFullError)
+    async def team_is_full_handler(request: Request, exc: TeamIsFullError):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(AlreadyInTeamError)
+    async def already_in_team_handler(request: Request, exc: AlreadyInTeamError):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(DeadlinePassedError)
+    async def deadline_passed_handler(request: Request, exc: DeadlinePassedError):
+        return JSONResponse(
+            status_code=status.HTTP_403_FORBIDDEN,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(IncompleteTeamError)
+    async def incomplete_team_handler(request: Request, exc: IncompleteTeamError):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(InvalidStateError)
+    async def invalid_state_handler(request: Request, exc: InvalidStateError):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(DomainError)
+    async def domain_error_handler(request: Request, exc: DomainError):
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": exc.message},
+        )
+
+
+=== FILE: backend\src\api\upload_router.py ===
+"""Роутер для загрузки медиа-файлов."""
+
+from fastapi import APIRouter, Depends, File, UploadFile
+
+from api.dependencies import upload_service
+from auth.auth import current_user
+from models.user import User
+from schemas.upload import ImageUploadResponse
+from services.upload_services import UploadServices
+
+router = APIRouter(
+    prefix="/upload",
+    tags=["Upload"],
+)
+
+
+@router.post(
+    "/image",
+    response_model=ImageUploadResponse,
+    summary="Загрузка изображения (аватарка или баннер)",
+)
+async def upload_image(
+    file: UploadFile = File(..., description="Файл изображения (JPEG, PNG, WebP до 5 МБ)"),
+    user: User = Depends(current_user),
+    service: UploadServices = Depends(upload_service),
+):
+    """Загружает изображение на сервер и возвращает URL для сохранения в профиле или хакатоне."""
+    url = await service.save_image(file)
+    return ImageUploadResponse(url=url)
+
+
+=== FILE: backend\src\api\user_router.py ===
+"""Роутер для работы с профилями пользователей."""
+
+import uuid
+from typing import List
+
+from fastapi import APIRouter, Depends
+
+from api.dependencies import event_service, user_service
+from auth.auth import current_user
+from auth.schemas import UserPasswordChange, UserRead, UserUpdate, UserPublicRead
+from models.user import User
+from schemas.event import UserEventItemRead
+from services.event_services import EventServices
+from services.user_services import UserServices
+
+router = APIRouter(
+    prefix="/users",
+    tags=["Users"],
+)
+
+
+@router.get(
+    "/me",
+    response_model=UserRead,
+    summary="Получить профиль текущего пользователя",
+)
+async def get_current_user_profile(
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Возвращает полную информацию о профиле авторизованного пользователя."""
+    return await service.get_user_by_id(user.id)
+
+
+@router.patch(
+    "/me",
+    response_model=UserRead,
+    summary="Обновить профиль текущего пользователя",
+)
+async def update_current_user_profile(
+    user_data: UserUpdate,
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Обновляет поля профиля (ФИО, вуз, навыки, соцсети, о себе)."""
+    return await service.update_profile(user.id, user_data)
+
+
+@router.post(
+    "/me/change-password",
+    summary="Сменить пароль текущего пользователя",
+)
+async def change_current_user_password(
+    password_data: UserPasswordChange,
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Безопасная смена пароля с обязательным подтверждением старого пароля."""
+    await service.change_password(user.id, password_data)
+    return {"detail": "Пароль успешно изменен"}
+
+
+@router.post(
+    "/me/telegram-bind-link",
+    summary="Сгенерировать ссылку для привязки Telegram-бота",
+)
+async def create_telegram_bind_link(
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Генерирует секретную deep-link ссылку для привязки аккаунта в Telegram."""
+    link = await service.generate_telegram_bind_link(user.id)
+    return {"bind_url": link}
+
+
+@router.get(
+    "/me/events",
+    response_model=List[UserEventItemRead],
+    summary="Список мероприятий текущего пользователя",
+)
+async def get_my_events(
+    user: User = Depends(current_user),
+    service: EventServices = Depends(event_service),
+):
+    """Возвращает мероприятия, на которые зарегистрирован текущий пользователь.
+
+    Используется для блока «Ваши события» в профиле и виджета на главной.
+    """
+    registrations = await service.get_user_events(user_id=user.id)
+    return [
+        UserEventItemRead(
+            event=reg.event,
+            registration=reg,
+        )
+        for reg in registrations
+    ]
+
+
+@router.get(
+    "/{user_id}",
+    response_model=UserPublicRead,
+    summary="Получить публичный профиль пользователя по ID",
+)
+async def get_user_by_id(
+    user_id: uuid.UUID,
+    user: User = Depends(current_user),
+    service: UserServices = Depends(user_service),
+):
+    """Возвращает информацию о профиле любого участника (для просмотра карточки кандидата)."""
+    return await service.get_user_by_id(user_id)
+
+
+=== FILE: backend\src\auth\auth.py ===
+"""Модуль аутентификации и JWT-стратегии fastapi-users."""
+
+import uuid
+from fastapi_users import FastAPIUsers
+from fastapi_users.authentication import (
+    AuthenticationBackend,
+    BearerTransport,
+    CookieTransport,
+    JWTStrategy,
+)
+from fastapi_users.password import PasswordHelper
+from pwdlib import PasswordHash
+from pwdlib.hashers.argon2 import Argon2Hasher
+
+from auth.manager import get_user_manager
+from config import COOKIE_SECURE, SECRET_AUTH
+from models.user import User
+
+# Транспорт через Cookies (с учетом флага COOKIE_SECURE для локальной разработки)
+cookie_samesite = "none" if COOKIE_SECURE else "lax"
+cookie_transport = CookieTransport(
+    cookie_name="teamtinder_session",
+    cookie_max_age=28800,
+    cookie_secure=COOKIE_SECURE,
+    cookie_samesite=cookie_samesite,
+)
+
+# Транспорт через заголовок Authorization: Bearer <token>
+bearer_transport = BearerTransport(tokenUrl="/api/v1/auth/bearer/login")
+
+
+def get_jwt_strategy() -> JWTStrategy:
+    """Генератор стратегии JWT с временем жизни токена 24 часа."""
+    return JWTStrategy(secret=SECRET_AUTH, lifetime_seconds=86400)
+
+
+auth_backend = AuthenticationBackend(
+    name="jwt",
+    transport=cookie_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+bearer_backend = AuthenticationBackend(
+    name="jwt-bearer",
+    transport=bearer_transport,
+    get_strategy=get_jwt_strategy,
+)
+
+fastapi_users = FastAPIUsers[User, uuid.UUID](
+    get_user_manager,
+    [auth_backend, bearer_backend],
+)
+
+# Хэширование паролей с алгоритмом Argon2
+password_hash = PasswordHash((Argon2Hasher(),))
+password_helper = PasswordHelper(password_hash)
+
+# Текущий авторизованный активный пользователь
+current_user = fastapi_users.current_user(active=True)
+current_superuser = fastapi_users.current_user(active=True, superuser=True)
+
+
+=== FILE: backend\src\auth\database.py ===
+"""Адаптер базы данных для fastapi-users."""
+
+from typing import AsyncGenerator
+from fastapi import Depends
+from fastapi_users.db import SQLAlchemyUserDatabase
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database.database import get_async_session
+from models.user import User
+
+
+async def get_user_db(
+    session: AsyncSession = Depends(get_async_session),
+) -> AsyncGenerator[SQLAlchemyUserDatabase, None]:
+    """Предоставляет адаптер БД для fastapi-users с моделью User."""
+    yield SQLAlchemyUserDatabase(session, User)
+
+
+=== FILE: backend\src\auth\manager.py ===
+"""Менеджер управления пользователями fastapi-users."""
+
+import uuid
+from typing import Optional
+
+from fastapi import Depends, Request
+from fastapi_users import BaseUserManager, UUIDIDMixin, exceptions, models, schemas
+
+from auth.database import get_user_db
+from config import SECRET_USER_MANAGER
+from models.user import User
+
+SECRET = SECRET_USER_MANAGER
+
+
+class UserManager(UUIDIDMixin, BaseUserManager[User, uuid.UUID]):
+    """Менеджер жизненного цикла пользователя (регистрация, сброс пароля, верификация)."""
+
+    reset_password_token_secret = SECRET
+    verification_token_secret = SECRET
+
+    async def on_after_register(self, user: User, request: Optional[Request] = None):
+        """Хэндлер после успешной регистрации пользователя."""
+        print(f"Пользователь {user.id} ({user.email}) успешно зарегистрирован.")
+
+    async def on_after_forgot_password(
+        self, user: User, token: str, request: Optional[Request] = None
+    ):
+        """Хэндлер запроса сброса пароля."""
+        print(f"Пользователь {user.id} запросил сброс пароля. Токен: {token}")
+
+    async def on_after_request_verify(
+        self, user: User, token: str, request: Optional[Request] = None
+    ):
+        """Хэндлер запроса верификации email."""
+        print(f"Запрошена верификация для пользователя {user.id}. Токен: {token}")
+
+    async def create(
+        self,
+        user_create: schemas.UC,
+        safe: bool = False,
+        request: Optional[Request] = None,
+    ) -> models.UP:
+        """Создание пользователя с валидацией пароля и хэшированием."""
+        await self.validate_password(user_create.password, user_create)
+
+        existing_user = await self.user_db.get_by_email(user_create.email)
+        if existing_user is not None:
+            raise exceptions.UserAlreadyExists()
+
+        user_dict = (
+            user_create.create_update_dict()
+            if safe
+            else user_create.create_update_dict_superuser()
+        )
+        password = user_dict.pop("password")
+        user_dict["hashed_password"] = self.password_helper.hash(password)
+
+        created_user = await self.user_db.create(user_dict)
+        await self.on_after_register(created_user, request)
+        return created_user
+
+
+async def get_user_manager(user_db=Depends(get_user_db)):
+    """Фабрика зависимости менеджера пользователей."""
+    yield UserManager(user_db)
+
+
+=== FILE: backend\src\auth\schemas.py ===
+"""Pydantic-схемы для аутентификации и профиля пользователя."""
+
+import uuid
+from datetime import datetime
+from typing import List, Optional
+
+from fastapi_users import schemas
+from pydantic import BaseModel, ConfigDict, Field
+
+from models.enums import ParticipantSpecialization, UserRole
+
+
+class UserRead(schemas.BaseUser[uuid.UUID]):
+    """Схема чтения профиля пользователя."""
+
+    role: UserRole
+    full_name: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    bio: Optional[str] = None
+    skills: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
+    vk_url: Optional[str] = None
+    github_url: Optional[str] = None
+    telegram_id: Optional[int] = None
+    telegram_username: Optional[str] = None
+    is_bot_active: bool = False
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserCreate(schemas.BaseUserCreate):
+    """Схема регистрации нового пользователя."""
+
+    full_name: str
+    nickname: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    skills: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
+
+
+class UserUpdate(BaseModel):
+    """Схема редактирования профиля текущего пользователя."""
+
+    full_name: Optional[str] = None
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    bio: Optional[str] = None
+    skills: Optional[List[str]] = None
+    specializations: Optional[List[ParticipantSpecialization]] = None
+    vk_url: Optional[str] = None
+    github_url: Optional[str] = None
+
+
+class UserPasswordChange(BaseModel):
+    """Схема безопасной смены пароля текущего пользователя."""
+
+    old_password: str = Field(
+        ..., description="Текущий пароль для подтверждения личности"
+    )
+    new_password: str = Field(
+        ..., min_length=8, description="Новый пароль (минимум 8 символов)"
+    )
+
+
+class UserPublicRead(BaseModel):
+    """Публичный профиль участника (без email и telegram_id)."""
+    id: uuid.UUID
+    role: UserRole
+    full_name: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    bio: Optional[str] = None
+    skills: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
+    vk_url: Optional[str] = None
+    github_url: Optional[str] = None
+    telegram_username: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+=== FILE: backend\src\cli\create_superuser.py ===
+"""CLI-команда для создания первого администратора/организатора платформы."""
+
+import argparse
+import asyncio
+import sys
+
+from sqlalchemy import select
+
+from auth.auth import password_helper
+from database.database import async_session_maker
+from models.enums import UserRole
+from models.user import User
+
+
+async def create_superuser(
+    email: str,
+    password: str,
+    full_name: str,
+    role: UserRole = UserRole.ADMIN,
+) -> None:
+    """Создает супер-администратора или организатора в базе данных."""
+    async with async_session_maker() as session:
+        # Проверяем, существует ли уже пользователь с таким email
+        stmt = select(User).where(User.email == email)
+        result = await session.execute(stmt)
+        existing_user = result.scalar_one_or_none()
+
+        if existing_user:
+            print(f"Ошибка: Пользователь с email '{email}' уже существует.")
+            sys.exit(1)
+
+        hashed_password = password_helper.hash(password)
+        new_user = User(
+            email=email,
+            hashed_password=hashed_password,
+            full_name=full_name,
+            role=role,
+            is_active=True,
+            is_superuser=True,
+            is_verified=True,
+            skills=[],
+            specializations=[],
+        )
+        session.add(new_user)
+        await session.commit()
+        await session.refresh(new_user)
+        print(f"Супер-администратор успешно создан: ID={new_user.id}, Email={new_user.email}, Роль={new_user.role.value}")
+
+
+def main() -> None:
+    """Точка входа CLI."""
+    parser = argparse.ArgumentParser(
+        description="Создание первого администратора платформы TeamFinder"
+    )
+    parser.add_argument(
+        "--email",
+        type=str,
+        required=True,
+        help="Email адрес администратора",
+    )
+    parser.add_argument(
+        "--password",
+        type=str,
+        required=True,
+        help="Пароль администратора (минимум 8 символов)",
+    )
+    parser.add_argument(
+        "--full-name",
+        type=str,
+        default="Главный Администратор",
+        help="ФИО администратора",
+    )
+    parser.add_argument(
+        "--role",
+        type=str,
+        choices=[r.value for r in UserRole],
+        default=UserRole.ADMIN.value,
+        help="Роль в системе (admin или organizer)",
+    )
+
+    args = parser.parse_args()
+
+    if len(args.password) < 8:
+        print("Ошибка: Пароль должен содержать не менее 8 символов.")
+        sys.exit(1)
+
+    asyncio.run(
+        create_superuser(
+            email=args.email,
+            password=args.password,
+            full_name=args.full_name,
+            role=UserRole(args.role),
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
+
+
+=== FILE: backend\src\cli\__init__.py ===
+"""Пакет CLI-утилит для управления платформой."""
+
+
+=== FILE: backend\src\database\database.py ===
+"""Настройка базы данных и сессий SQLAlchemy."""
+
+from typing import AsyncGenerator
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import DeclarativeBase
+
+from config import DATABASE_URL_CONFIG
+
+DATABASE_URL = DATABASE_URL_CONFIG
+
+
+class Base(DeclarativeBase):
+    """Базовый класс для всех моделей SQLAlchemy."""
+
+    pass
+
+
+engine = create_async_engine(DATABASE_URL, echo=False)
+async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
+
+
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
+    """Генератор асинхронных сессий базы данных."""
+    async with async_session_maker() as session:
+        yield session
+
+
+=== FILE: backend\src\migrations\env.py ===
+import asyncio
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy import pool
+from sqlalchemy.engine import Connection
+from sqlalchemy.ext.asyncio import async_engine_from_config
+
+from config import DATABASE_URL_CONFIG
+from database.database import Base
+import models  # noqa: F401  # Регистрация всех моделей в Base.metadata
+
+config = context.config
+
+# Передаем в Alembic наш готовый URL с драйвером postgresql+asyncpg://
+config.set_main_option("sqlalchemy.url", DATABASE_URL_CONFIG)
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+target_metadata = Base.metadata
+
+
+def run_migrations_offline() -> None:
+    """Запуск миграций в offline-режиме."""
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def do_run_migrations(connection: Connection) -> None:
+    """Синхронный колбэк, который Alembic выполняет внутри асинхронного соединения."""
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+async def run_async_migrations() -> None:
+    """Создает асинхронный движок на базе asyncpg и запускает миграции."""
+    connectable = async_engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    async with connectable.connect() as connection:
+        await connection.run_sync(do_run_migrations)
+
+    await connectable.dispose()
+
+
+def run_migrations_online() -> None:
+    """Запуск миграций в online-режиме через цикл событий asyncio."""
+    asyncio.run(run_async_migrations())
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+
+=== FILE: backend\src\models\enums.py ===
+import enum
+
+
+class UserRole(str, enum.Enum):
+    """Роли пользователей в системе."""
+
+    PARTICIPANT = "participant"
+    ORGANIZER = "organizer"
+    ADMIN = "admin"
+
+
+class ParticipantSpecialization(str, enum.Enum):
+    """Специализации участников в командах."""
+
+    FRONTEND = "frontend"
+    BACKEND = "backend"
+    MOBILE = "mobile"
+    DESIGN = "design"
+    AI_ML = "ai_ml"
+    MANAGEMENT = "management"
+    QA_DEVOPS = "qa_devops"
+
+
+class EventStatus(str, enum.Enum):
+    """Статусы жизненного цикла мероприятия."""
+
+    DRAFT = "draft"
+    REGISTRATION = "registration"
+    TEAM_LOCK = "team_lock"
+    SUBMISSION = "submission"
+    FINISHED = "finished"
+
+
+class EventFormat(str, enum.Enum):
+    """Формат проведения мероприятия."""
+
+    OFFLINE = "offline"
+    ONLINE = "online"
+    HYBRID = "hybrid"
+
+
+class TeamRequestStatus(str, enum.Enum):
+    """Статусы заявок и приглашений в команду."""
+
+    PENDING_CAPTAIN = "pending_captain"
+    PENDING_USER = "pending_user"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class TeamRequestType(str, enum.Enum):
+    """Тип заявки: отклик студента или приглашение капитана."""
+
+    APPLICATION = "application"
+    INVITE = "invite"
+
+
+=== FILE: backend\src\models\event.py ===
+"""Модели мероприятий (Event) и регистраций участников (EventRegistration)."""
+
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import (
+    Boolean,
+    Enum as SQLEnum,
+    ForeignKey,
+    SmallInteger,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TIMESTAMP
+
+from database.database import Base
+from models.enums import EventFormat, EventStatus
+
+
+class Event(Base):
+    """Мероприятие (хакатон, кейс-чемпионат)."""
+
+    __tablename__ = "events"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    short_description: Mapped[str] = mapped_column(String(500), nullable=False)
+    description_md: Mapped[str] = mapped_column(Text, nullable=False)
+    organizer_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    organizer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    status: Mapped[EventStatus] = mapped_column(
+        SQLEnum(EventStatus, name="event_status_enum", native_enum=False),
+        default=EventStatus.REGISTRATION,
+        nullable=False,
+    )
+    format: Mapped[EventFormat] = mapped_column(
+        SQLEnum(EventFormat, name="event_format_enum", native_enum=False),
+        nullable=False,
+    )
+
+    tags: Mapped[List[str]] = mapped_column(
+        ARRAY(String),
+        default=list,
+        server_default="{}",
+        nullable=False,
+    )
+    banner_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    theme_color: Mapped[str] = mapped_column(
+        String(7),
+        default="#0044FF",
+        server_default="#0044FF",
+        nullable=False,
+    )
+    is_public: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+    )
+    is_featured: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    invite_code: Mapped[str] = mapped_column(
+        String(32),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+
+    min_team_size: Mapped[int] = mapped_column(SmallInteger, default=1, nullable=False)
+    max_team_size: Mapped[int] = mapped_column(SmallInteger, default=5, nullable=False)
+
+    registration_start: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    registration_end: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    event_start: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    submission_deadline: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+    event_end: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=False,
+    )
+
+    custom_fields_schema: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Связи
+    registrations = relationship(
+        "EventRegistration",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+    teams = relationship(
+        "Team",
+        back_populates="event",
+        cascade="all, delete-orphan",
+    )
+
+
+class EventRegistration(Base):
+    """Регистрация пользователя на мероприятие (участник или одиночка)."""
+
+    __tablename__ = "event_registrations"
+    __table_args__ = (UniqueConstraint("event_id", "user_id", name="uq_event_user"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    custom_answers: Mapped[Optional[Dict[str, Any]]] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    joined_team_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    registered_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Связи
+    event = relationship("Event", back_populates="registrations")
+    team = relationship("Team", back_populates="members")
+    user = relationship("User")
+
+
+=== FILE: backend\src\models\submission.py ===
+"""Модель сданных решений (Submission)."""
+
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import ForeignKey, String, Text, func
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TIMESTAMP
+
+from database.database import Base
+
+
+class Submission(Base):
+    """Сданный проект команды на хакатоне."""
+
+    __tablename__ = "submissions"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+        index=True,
+    )
+    submitted_by_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    github_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    presentation_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    demo_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    submitted_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Связи
+    team = relationship("Team", back_populates="submission")
+    submitted_by_user = relationship("User", foreign_keys=[submitted_by_user_id])
+
+
+=== FILE: backend\src\models\team.py ===
+"""Модели команд (Team) и заявок/приглашений (TeamRequest)."""
+
+import uuid
+from datetime import datetime
+from typing import List, Optional
+
+from sqlalchemy import (
+    Boolean,
+    Enum as SQLEnum,
+    ForeignKey,
+    Index,
+    SmallInteger,
+    String,
+    Text,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, UUID
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.types import TIMESTAMP
+
+from database.database import Base
+from models.enums import TeamRequestStatus, TeamRequestType
+
+
+class Team(Base):
+    """Команда внутри конкретного мероприятия."""
+
+    __tablename__ = "teams"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    captain_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    max_members: Mapped[int] = mapped_column(SmallInteger, default=5, nullable=False)
+    needed_roles: Mapped[List[str]] = mapped_column(
+        ARRAY(String),
+        default=list,
+        server_default="{}",
+        nullable=False,
+    )
+    allow_auto_match: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        server_default="true",
+        nullable=False,
+    )
+    invite_token: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        index=True,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Связи
+    event = relationship("Event", back_populates="teams")
+    captain = relationship("User", foreign_keys=[captain_id])
+    members = relationship(
+        "EventRegistration",
+        back_populates="team",
+    )
+    requests = relationship(
+        "TeamRequest",
+        back_populates="team",
+        cascade="all, delete-orphan",
+    )
+    submission = relationship(
+        "Submission",
+        back_populates="team",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+
+
+class TeamRequest(Base):
+    """Заявка участника в команду или приглашение от капитана."""
+
+    __tablename__ = "team_requests"
+    __table_args__ = (
+        Index(
+            "uq_active_team_user_request",
+            "team_id",
+            "user_id",
+            unique=True,
+            postgresql_where=text("status IN ('PENDING_CAPTAIN', 'PENDING_USER')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4,
+    )
+    event_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("events.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("teams.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    target_role: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+        default=None,
+    )
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True, default=None)
+
+    request_type: Mapped[TeamRequestType] = mapped_column(
+        SQLEnum(TeamRequestType, name="team_request_type_enum", native_enum=False),
+        nullable=False,
+    )
+    status: Mapped[TeamRequestStatus] = mapped_column(
+        SQLEnum(TeamRequestStatus, name="team_request_status_enum", native_enum=False),
+        default=TeamRequestStatus.PENDING_CAPTAIN,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    # Связи
+    team = relationship("Team", back_populates="requests")
+    user = relationship("User", foreign_keys=[user_id])
+
+
+=== FILE: backend\src\models\user.py ===
+"""Модель пользователя системы."""
+
+from datetime import datetime
+from typing import Optional, List
+
+from fastapi_users.db import SQLAlchemyBaseUserTableUUID
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    Enum as SQLEnum,
+    SmallInteger,
+    String,
+    Text,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import TIMESTAMP
+
+from database.database import Base
+from models.enums import UserRole
+
+
+class User(SQLAlchemyBaseUserTableUUID, Base):
+    """Таблица пользователей платформы (совместима с fastapi-users)."""
+
+    __tablename__ = "users"
+
+    # Роль в системе
+    role: Mapped[UserRole] = mapped_column(
+        SQLEnum(UserRole, name="user_role_enum", native_enum=False),
+        default=UserRole.PARTICIPANT,
+        nullable=False,
+    )
+
+    # Профиль участника
+    full_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    nickname: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    university: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    study_group: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    course: Mapped[Optional[int]] = mapped_column(SmallInteger, nullable=True)
+    bio: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Навыки и роли
+    skills: Mapped[List[str]] = mapped_column(
+        ARRAY(String),
+        default=list,
+        server_default="{}",
+        nullable=False,
+    )
+    specializations: Mapped[List[str]] = mapped_column(
+        ARRAY(String),
+        default=list,
+        server_default="{}",
+        nullable=False,
+    )
+
+    # Социальные сети
+    vk_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    github_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+
+    # Интеграция с Telegram-ботом
+    telegram_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger,
+        unique=True,
+        nullable=True,
+        index=True,
+    )
+    telegram_username: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    telegram_bind_token: Mapped[Optional[str]] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+        index=True,
+    )
+    telegram_bind_token_expires_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True),
+        nullable=True,
+    )
+    is_bot_active: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # Аудит
+    created_at: Mapped[datetime] = mapped_column(
+        TIMESTAMP(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+
+=== FILE: backend\src\models\__init__.py ===
+"""Экспорт всех моделей и перечислений для приложения и Alembic."""
+
+from database.database import Base
+from models.enums import (
+    EventFormat,
+    EventStatus,
+    ParticipantSpecialization,
+    TeamRequestStatus,
+    TeamRequestType,
+    UserRole,
+)
+from models.event import Event, EventRegistration
+from models.submission import Submission
+from models.team import Team, TeamRequest
+from models.user import User
+
+__all__ = [
+    "Base",
+    "User",
+    "Event",
+    "EventRegistration",
+    "Team",
+    "TeamRequest",
+    "Submission",
+    "UserRole",
+    "ParticipantSpecialization",
+    "EventStatus",
+    "EventFormat",
+    "TeamRequestStatus",
+    "TeamRequestType",
+]
+
+
+=== FILE: backend\src\repositories\event_repo.py ===
+"""Репозиторий для работы с мероприятиями (Event)."""
+
+import uuid
+from typing import List, Optional, Union
+
+from sqlalchemy import func, select
+
+from models.enums import EventStatus
+from models.event import Event
+from utils.repository import SQLAlchemyRepository
+
+
+class EventRepository(SQLAlchemyRepository):
+    """Репозиторий таблицы мероприятий."""
+
+    model = Event
+
+    async def get_by_id_or_invite_code(
+        self,
+        identifier: Union[str, uuid.UUID],
+    ) -> Optional[Event]:
+        """Поиск мероприятия по UUID или по инвайт-коду.
+
+        Сначала пытается обработать идентификатор как UUID через базовый find_one_or_none(id=...),
+        а если строка не является UUID или запись не найдена — ищет по invite_code.
+        """
+        if isinstance(identifier, uuid.UUID):
+            return await self.find_one_or_none(id=identifier)
+
+        try:
+            parsed_uuid = uuid.UUID(identifier)
+            event = await self.find_one_or_none(id=parsed_uuid)
+            if event is not None:
+                return event
+        except (ValueError, AttributeError):
+            pass
+
+        return await self.find_one_or_none(invite_code=str(identifier))
+
+    async def get_public_events(
+        self,
+        is_featured: Optional[bool] = None,
+        status: Optional[EventStatus] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Event]:
+        """Получение списка публичных мероприятий для главной страницы с сортировкой и пагинацией.
+
+        :param is_featured: фильтр для карточек верхнего слайдера
+        :param status: фильтр по статусу жизненного цикла (например, REGISTRATION)
+        :param limit: количество записей (пагинация)
+        :param offset: смещение (пагинация)
+        """
+        stmt = select(self.model).where(self.model.is_public.is_(True))
+
+        if is_featured is not None:
+            stmt = stmt.where(self.model.is_featured == is_featured)
+
+        if status is not None:
+            stmt = stmt.where(self.model.status == status)
+
+        stmt = stmt.order_by(self.model.event_start.asc()).limit(limit).offset(offset)
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def count_public_events(
+        self,
+        is_featured: Optional[bool] = None,
+        status: Optional[EventStatus] = None,
+    ) -> int:
+        """Подсчет общего количества публичных мероприятий с учетом фильтров."""
+        stmt = select(func.count(self.model.id)).where(self.model.is_public.is_(True))
+
+        if is_featured is not None:
+            stmt = stmt.where(self.model.is_featured == is_featured)
+
+        if status is not None:
+            stmt = stmt.where(self.model.status == status)
+
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
+
+
+=== FILE: backend\src\repositories\registration_repo.py ===
+"""Репозиторий для работы с регистрациями участников на мероприятия (EventRegistration)."""
+
+import uuid
+from typing import List, Optional
+
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import joinedload
+
+from models.event import EventRegistration
+from models.user import User
+from utils.repository import SQLAlchemyRepository
+
+
+class EventRegistrationRepository(SQLAlchemyRepository):
+    """Репозиторий таблицы регистраций участников на мероприятия."""
+
+    model = EventRegistration
+
+    async def get_solo_participants(
+        self,
+        event_id: uuid.UUID,
+        tags: Optional[List[str]] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[EventRegistration]:
+        """Получить свободных участников мероприятия без команды (team_id IS NULL).
+
+        Выполняет JOIN с пользователями, жадную предзагрузку связанных данных профиля (joinedload)
+        и фильтрацию по массиву тегов пользователя (User.skills.overlap).
+
+        :param event_id: ID мероприятия
+        :param tags: список тегов для проверки пересечения с навыками и компетенциями
+        :param limit: лимит записей (пагинация)
+        :param offset: смещение (пагинация)
+        """
+        stmt = (
+            select(self.model)
+            .options(joinedload(self.model.user))
+            .join(User, self.model.user_id == User.id)
+            .where(
+                self.model.event_id == event_id,
+                self.model.team_id.is_(None),
+            )
+        )
+
+        if tags:
+            stmt = stmt.where(
+                or_(
+                    User.specializations.overlap(tags),
+                    User.skills.overlap(tags),
+                )
+            )
+
+        stmt = stmt.order_by(self.model.registered_at.asc()).limit(limit).offset(offset)
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def count_solo_participants(
+        self,
+        event_id: uuid.UUID,
+        tags: Optional[List[str]] = None,
+    ) -> int:
+        """Подсчет общего количества свободных участников с учетом тегов."""
+        stmt = (
+            select(func.count(self.model.id))
+            .join(User, self.model.user_id == User.id)
+            .where(
+                self.model.event_id == event_id,
+                self.model.team_id.is_(None),
+            )
+        )
+
+        if tags:
+            stmt = stmt.where(
+                or_(
+                    User.specializations.overlap(tags),
+                    User.skills.overlap(tags),
+                )
+            )
+
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
+
+    async def get_by_event_and_user_for_update(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Optional[EventRegistration]:
+        """Найти регистрацию с пессимистичной блокировкой (SELECT FOR UPDATE) для защиты от Race Condition."""
+        stmt = (
+            select(self.model)
+            .where(
+                self.model.event_id == event_id,
+                self.model.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_event_and_user(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Optional[EventRegistration]:
+        """Найти регистрацию пользователя на мероприятии с предзагрузкой команды и профиля."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.user),
+                joinedload(self.model.team),
+            )
+            .where(
+                self.model.event_id == event_id,
+                self.model.user_id == user_id,
+            )
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_user_registrations(
+        self,
+        user_id: uuid.UUID,
+    ) -> List[EventRegistration]:
+        """Получить все регистрации пользователя с предзагрузкой мероприятий и команд (для профиля)."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.event),
+                joinedload(self.model.team),
+            )
+            .where(self.model.user_id == user_id)
+            .order_by(self.model.registered_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+
+=== FILE: backend\src\repositories\request_repo.py ===
+"""Репозиторий для работы с заявками и приглашениями в команды (TeamRequest)."""
+
+import uuid
+from typing import List, Optional
+
+from sqlalchemy import select, update
+
+from models.enums import TeamRequestStatus
+from models.team import TeamRequest
+from utils.repository import SQLAlchemyRepository
+
+
+class RequestRepository(SQLAlchemyRepository):
+    """Репозиторий таблицы team_requests."""
+
+    model = TeamRequest
+
+    async def get_active_request(
+        self,
+        team_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Optional[TeamRequest]:
+        """Найти активную заявку или приглашение между командой и пользователем."""
+        active_statuses = [
+            TeamRequestStatus.PENDING_CAPTAIN,
+            TeamRequestStatus.PENDING_USER,
+        ]
+        stmt = select(self.model).where(
+            self.model.team_id == team_id,
+            self.model.user_id == user_id,
+            self.model.status.in_(active_statuses),
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def cancel_other_user_requests(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+        exclude_request_id: Optional[uuid.UUID] = None,
+    ) -> None:
+        """Массово перевести все остальные активные заявки пользователя на событии в статус CANCELLED."""
+        active_statuses = [
+            TeamRequestStatus.PENDING_CAPTAIN,
+            TeamRequestStatus.PENDING_USER,
+        ]
+        stmt = (
+            update(self.model)
+            .where(
+                self.model.event_id == event_id,
+                self.model.user_id == user_id,
+                self.model.status.in_(active_statuses),
+            )
+            .values(status=TeamRequestStatus.CANCELLED)
+        )
+        if exclude_request_id is not None:
+            stmt = stmt.where(self.model.id != exclude_request_id)
+
+        await self.session.execute(stmt)
+
+    async def cancel_team_pending_requests(
+        self,
+        team_id: uuid.UUID,
+        exclude_request_id: Optional[uuid.UUID] = None,
+    ) -> List[TeamRequest]:
+        """Аннулировать все висящие заявки и офферы команды при ее заполнении (защита от овербукинга)."""
+        active_statuses = [
+            TeamRequestStatus.PENDING_CAPTAIN,
+            TeamRequestStatus.PENDING_USER,
+        ]
+        # Сначала получаем заявки, чтобы иметь возможность отправить уведомления
+        stmt_select = select(self.model).where(
+            self.model.team_id == team_id,
+            self.model.status.in_(active_statuses),
+        )
+        if exclude_request_id is not None:
+            stmt_select = stmt_select.where(self.model.id != exclude_request_id)
+
+        res = await self.session.execute(stmt_select)
+        requests_to_cancel = list(res.scalars().all())
+
+        if requests_to_cancel:
+            cancel_ids = [r.id for r in requests_to_cancel]
+            stmt_update = (
+                update(self.model)
+                .where(self.model.id.in_(cancel_ids))
+                .values(status=TeamRequestStatus.CANCELLED)
+            )
+            await self.session.execute(stmt_update)
+
+        return requests_to_cancel
+
+    async def cancel_all_event_pending_requests(self, event_id: uuid.UUID) -> None:
+        """Массово отменить все активные заявки хакатона при наступлении TEAM_LOCK."""
+        active_statuses = [
+            TeamRequestStatus.PENDING_CAPTAIN,
+            TeamRequestStatus.PENDING_USER,
+        ]
+        stmt = (
+            update(self.model)
+            .where(
+                self.model.event_id == event_id,
+                self.model.status.in_(active_statuses),
+            )
+            .values(status=TeamRequestStatus.CANCELLED)
+        )
+        await self.session.execute(stmt)
+
+    async def get_user_event_requests(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> List[TeamRequest]:
+        """Получить все заявки пользователя в рамках мероприятия."""
+        stmt = (
+            select(self.model)
+            .where(
+                self.model.event_id == event_id,
+                self.model.user_id == user_id,
+            )
+            .order_by(self.model.created_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def get_team_incoming_requests(
+        self,
+        team_id: uuid.UUID,
+    ) -> List[TeamRequest]:
+        """Получить все входящие и исходящие заявки команды."""
+        stmt = (
+            select(self.model)
+            .where(self.model.team_id == team_id)
+            .order_by(self.model.created_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+
+=== FILE: backend\src\repositories\submission_repo.py ===
+"""Репозиторий для работы со сданными проектами (Submission)."""
+
+import uuid
+from typing import List, Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
+
+from models.submission import Submission
+from models.team import Team
+from utils.repository import SQLAlchemyRepository
+
+
+class SubmissionRepository(SQLAlchemyRepository):
+    """Репозиторий таблицы submissions."""
+
+    model = Submission
+
+    async def get_by_team_id(self, team_id: uuid.UUID) -> Optional[Submission]:
+        """Получить решение команды по ID команды."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.submitted_by_user),
+                joinedload(self.model.team),
+            )
+            .where(self.model.team_id == team_id)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_event_id(self, event_id: uuid.UUID) -> List[Submission]:
+        """Получить все сданные решения хакатона с предзагрузкой команд и авторов сабмита."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.submitted_by_user),
+                joinedload(self.model.team).joinedload(Team.captain),
+            )
+            .where(self.model.event_id == event_id)
+            .order_by(self.model.submitted_at.desc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+
+=== FILE: backend\src\repositories\team_repo.py ===
+"""Репозиторий для работы с командами (Team)."""
+
+import uuid
+from typing import List, Optional
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import joinedload, selectinload
+
+from models.event import EventRegistration
+from models.team import Team
+from utils.repository import SQLAlchemyRepository
+
+
+class TeamRepository(SQLAlchemyRepository):
+    """Репозиторий таблицы команд."""
+
+    model = Team
+
+    async def get_by_id_for_update(self, team_id: uuid.UUID) -> Optional[Team]:
+        """Получить команду по ID с пессимистичной блокировкой (SELECT FOR UPDATE).
+
+        Используется для предотвращения Race Condition при одновременном вступлении участников.
+        """
+        stmt = select(self.model).where(self.model.id == team_id).with_for_update()
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_id_with_members(self, team_id: uuid.UUID) -> Optional[Team]:
+        """Получить команду по ID с жадной предзагрузкой капитана и участников с их профилями."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.captain),
+                selectinload(self.model.members).joinedload(EventRegistration.user),
+            )
+            .where(self.model.id == team_id)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_event_id(
+        self,
+        event_id: uuid.UUID,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Team]:
+        """Получить список всех команд мероприятия с предзагрузкой участников для каталога."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.captain),
+                selectinload(self.model.members).joinedload(EventRegistration.user),
+            )
+            .where(self.model.event_id == event_id)
+            .order_by(self.model.created_at.asc())
+            .limit(limit)
+            .offset(offset)
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def count_by_event(self, event_id: uuid.UUID) -> int:
+        """Подсчёт команд мероприятия для пагинации."""
+        stmt = select(func.count(self.model.id)).where(
+            self.model.event_id == event_id
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
+    async def get_by_invite_token(self, invite_token: str) -> Optional[Team]:
+        """Найти команду по секретному токену ссылки-приглашения (с предзагрузкой участников и события)."""
+        stmt = (
+            select(self.model)
+            .options(
+                joinedload(self.model.captain),
+                joinedload(self.model.event),
+                selectinload(self.model.members).joinedload(EventRegistration.user),
+            )
+            .where(self.model.invite_token == invite_token)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_invite_token_for_update(
+        self, invite_token: str
+    ) -> Optional[Team]:
+        """Найти команду по секретному токену с пессимистичной блокировкой (SELECT FOR UPDATE)."""
+        stmt = (
+            select(self.model)
+            .where(self.model.invite_token == invite_token)
+            .with_for_update()
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_members_count(self, team_id: uuid.UUID) -> int:
+        """Получить текущее количество подтвержденных участников в команде."""
+        stmt = select(func.count(EventRegistration.id)).where(
+            EventRegistration.team_id == team_id
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
+    async def is_name_taken(
+        self,
+        event_id: uuid.UUID,
+        name: str,
+        exclude_team_id: Optional[uuid.UUID] = None,
+    ) -> bool:
+        """Проверить, занято ли название команды в рамках мероприятия (без учета регистра)."""
+        clean_name = name.strip().lower()
+        stmt = select(func.count(self.model.id)).where(
+            self.model.event_id == event_id,
+            func.lower(self.model.name) == clean_name,
+        )
+        if exclude_team_id is not None:
+            stmt = stmt.where(self.model.id != exclude_team_id)
+
+        res = await self.session.execute(stmt)
+        return (res.scalar_one() or 0) > 0
+
+    async def get_incomplete_teams_for_matching(
+        self, event_id: uuid.UUID
+    ) -> List[Team]:
+        """Получить неполные команды хакатона с флагом allow_auto_match=True для умного матчинга."""
+        stmt = (
+            select(self.model)
+            .options(selectinload(self.model.members).joinedload(EventRegistration.user))
+            .where(
+                self.model.event_id == event_id,
+                self.model.allow_auto_match.is_(True),
+            )
+            .order_by(self.model.created_at.asc())
+        )
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+
+=== FILE: backend\src\repositories\user_repo.py ===
+"""Репозиторий для работы с пользователями."""
+
+from models.user import User
+from utils.repository import SQLAlchemyRepository
+
+
+class UserRepository(SQLAlchemyRepository):
+    model = User
+
+
+=== FILE: backend\src\repositories\__init__.py ===
+"""Репозитории для работы с сущностями базы данных."""
+
+from repositories.event_repo import EventRepository
+from repositories.registration_repo import EventRegistrationRepository
+from repositories.request_repo import RequestRepository
+from repositories.submission_repo import SubmissionRepository
+from repositories.team_repo import TeamRepository
+from repositories.user_repo import UserRepository
+
+__all__ = [
+    "UserRepository",
+    "EventRepository",
+    "EventRegistrationRepository",
+    "TeamRepository",
+    "RequestRepository",
+    "SubmissionRepository",
+]
+
+
+=== FILE: backend\src\schemas\common.py ===
+"""Общие Pydantic-схемы платформы."""
+
+import math
+from typing import Generic, List, TypeVar
+from pydantic import BaseModel, ConfigDict, Field
+
+T = TypeVar("T")
+
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    """Универсальная схема ответа для пагинированных списков."""
+
+    items: List[T] = Field(..., description="Элементы текущей страницы")
+    total: int = Field(..., ge=0, description="Общее количество записей")
+    page: int = Field(..., ge=1, description="Номер текущей страницы (начиная с 1)")
+    size: int = Field(..., ge=1, description="Размер страницы (лимит элементов)")
+    pages: int = Field(..., ge=0, description="Общее количество страниц")
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, from_attributes=True)
+
+    @classmethod
+    def create(
+        cls,
+        items: List[T],
+        total: int,
+        page: int,
+        size: int,
+    ) -> "PaginatedResponse[T]":
+        """Фабричный метод вычисления количества страниц и формирования схемы."""
+        pages = math.ceil(total / size) if size > 0 else 0
+        return cls(
+            items=items,
+            total=total,
+            page=page,
+            size=size,
+            pages=pages,
+        )
+
+
+=== FILE: backend\src\schemas\event.py ===
+"""Pydantic-схемы для мероприятий и регистраций участников."""
+
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from models.enums import EventFormat, EventStatus, ParticipantSpecialization
+
+
+# =====================================================================
+# Схемы профиля участника внутри регистрации
+# =====================================================================
+
+
+class EventRegistrationUserRead(BaseModel):
+    """Краткая информация о пользователе для каталога участников."""
+
+    id: uuid.UUID
+    full_name: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    bio: Optional[str] = None
+    skills: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
+    telegram_username: Optional[str] = None
+    vk_url: Optional[str] = None
+    github_url: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =====================================================================
+# Схемы регистрации на мероприятие (EventRegistration)
+# =====================================================================
+
+
+class EventRegistrationCreate(BaseModel):
+    """Схема подачи заявки на регистрацию в мероприятии."""
+
+    custom_answers: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Ответы на специфичные вопросы анкеты конкретного хакатона (ключ: ID поля, значение: ответ)",
+    )
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "custom_answers": {
+                    "additionalProp1": "value"
+                }
+            }
+        }
+    )
+
+
+class EventRegistrationRead(BaseModel):
+    """Схема чтения данных регистрации участника на мероприятии."""
+
+    id: uuid.UUID
+    event_id: uuid.UUID
+    user_id: uuid.UUID
+    team_id: Optional[uuid.UUID] = None
+    custom_answers: Optional[Dict[str, Any]] = None
+    joined_team_at: Optional[datetime] = None
+    registered_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class SoloParticipantRead(BaseModel):
+    """Схема свободного участника без команды для каталога 'Пригласить участников'."""
+
+    id: uuid.UUID
+    event_id: uuid.UUID
+    user_id: uuid.UUID
+    team_id: Optional[uuid.UUID] = None
+    custom_answers: Optional[Dict[str, Any]] = None
+    registered_at: datetime
+    user: EventRegistrationUserRead
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =====================================================================
+# Схемы мероприятий (Event)
+# =====================================================================
+
+
+class EventBase(BaseModel):
+    """Базовые поля мероприятия."""
+
+    title: str = Field(..., max_length=255, description="Название мероприятия")
+    short_description: str = Field(
+        ..., max_length=500, description="Краткое описание для карточки"
+    )
+    description_md: str = Field(
+        ..., description="Полное описание мероприятия в формате Markdown"
+    )
+    organizer_name: str = Field(
+        ..., max_length=255, description="Отображаемое имя организатора"
+    )
+    format: EventFormat = Field(
+        default=EventFormat.ONLINE, description="Формат проведения"
+    )
+    tags: List[str] = Field(
+        default_factory=list, description="Теги тематики мероприятия"
+    )
+    banner_url: Optional[str] = Field(
+        default=None, max_length=512, description="Ссылка на баннер"
+    )
+    theme_color: str = Field(
+        default="#0044FF", max_length=7, description="HEX-цвет баннера"
+    )
+    is_public: bool = Field(
+        default=True, description="Показывать ли в общем каталоге на главной странице"
+    )
+    is_featured: bool = Field(
+        default=False, description="Выводить ли в верхний слайдер на главной странице"
+    )
+    min_team_size: int = Field(
+        default=1, ge=1, description="Минимальный размер команды"
+    )
+    max_team_size: int = Field(
+        default=5, ge=1, le=50, description="Максимальный размер команды"
+    )
+    registration_start: datetime = Field(
+        ..., description="Дата и время начала регистрации"
+    )
+    registration_end: datetime = Field(
+        ..., description="Дедлайн регистрации и формирования команд"
+    )
+    event_start: datetime = Field(..., description="Начало основной части мероприятия")
+    submission_deadline: datetime = Field(..., description="Дедлайн загрузки решений")
+    event_end: datetime = Field(..., description="Окончание мероприятия")
+    custom_fields_schema: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Схема дополнительных вопросов анкеты под конкретный хакатон",
+    )
+
+
+class EventCreate(EventBase):
+    """Схема создания нового мероприятия организатором."""
+
+    status: Optional[EventStatus] = Field(
+        default=EventStatus.REGISTRATION,
+        description="Начальный статус мероприятия",
+    )
+
+
+class EventUpdate(BaseModel):
+    """Схема обновления мероприятия организатором."""
+
+    title: Optional[str] = Field(default=None, max_length=255)
+    short_description: Optional[str] = Field(default=None, max_length=500)
+    description_md: Optional[str] = None
+    organizer_name: Optional[str] = Field(default=None, max_length=255)
+    status: Optional[EventStatus] = None
+    format: Optional[EventFormat] = None
+    tags: Optional[List[str]] = None
+    banner_url: Optional[str] = Field(default=None, max_length=512)
+    theme_color: Optional[str] = Field(default=None, max_length=7)
+    is_public: Optional[bool] = None
+    is_featured: Optional[bool] = None
+    min_team_size: Optional[int] = Field(default=None, ge=1)
+    max_team_size: Optional[int] = Field(default=None, ge=1, le=50)
+    registration_start: Optional[datetime] = None
+    registration_end: Optional[datetime] = None
+    event_start: Optional[datetime] = None
+    submission_deadline: Optional[datetime] = None
+    event_end: Optional[datetime] = None
+    custom_fields_schema: Optional[Dict[str, Any]] = None
+
+
+class EventRead(BaseModel):
+    """Схема чтения информации о мероприятии для каталога на главной странице."""
+
+    id: uuid.UUID
+    title: str
+    short_description: str
+    organizer_name: str
+    organizer_id: uuid.UUID
+    status: EventStatus
+    format: EventFormat
+    tags: List[str]
+    banner_url: Optional[str] = None
+    theme_color: str
+    is_public: bool
+    is_featured: bool
+    invite_code: str
+    min_team_size: int
+    max_team_size: int
+    registration_start: datetime
+    registration_end: datetime
+    event_start: datetime
+    submission_deadline: datetime
+    event_end: datetime
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EventDetailRead(EventRead):
+    """Схема детальной страницы мероприятия (включает Markdown-описание и регистрацию текущего пользователя)."""
+
+    description_md: str
+    custom_fields_schema: Optional[Dict[str, Any]] = None
+    my_registration: Optional[EventRegistrationRead] = None
+
+
+class UserEventItemRead(BaseModel):
+    """Схема мероприятия в списке личных событий пользователя (GET /users/me/events)."""
+
+    event: EventRead
+    registration: EventRegistrationRead
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+=== FILE: backend\src\schemas\team.py ===
+"""Pydantic-схемы для команд (Team)."""
+
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from models.enums import ParticipantSpecialization
+
+
+# =====================================================================
+# Схемы участников команды
+# =====================================================================
+
+
+class TeamMemberRead(BaseModel):
+    """Схема участника команды для отображения в составе команды."""
+
+    user_id: uuid.UUID
+    full_name: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    is_captain: bool = False
+    specializations: List[ParticipantSpecialization] = []
+    skills: List[str] = []
+    telegram_username: Optional[str] = None
+    joined_team_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# =====================================================================
+# Базовые схемы команд
+# =====================================================================
+
+
+class TeamBase(BaseModel):
+    """Базовые поля команды."""
+
+    name: str = Field(
+        ...,
+        min_length=2,
+        max_length=150,
+        description="Название команды (например, 'Drill Flex')",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Краткое описание идеи проекта или кого ищет команда",
+    )
+    max_members: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        description="Желаемый размер команды, указанный капитаном (в пределах правил хакатона)",
+    )
+    needed_roles: List[ParticipantSpecialization] = Field(
+        default_factory=list,
+        description="Специализации 'Ищем' строго из перечисления ParticipantSpecialization",
+    )
+    allow_auto_match: bool = Field(
+        default=True,
+        description="Разрешить добавление свободных участников алгоритмом автораспределения",
+    )
+
+
+class TeamCreate(TeamBase):
+    """Схема создания новой команды внутри хакатона."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "name": "Drill Flex",
+                "description": "Разрабатываем платформу умного подбора команд для хакатонов",
+                "max_members": 5,
+                "needed_roles": ["backend", "design"],
+                "allow_auto_match": True,
+            }
+        }
+    )
+
+
+class TeamUpdate(BaseModel):
+    """Схема обновления данных команды капитаном или организатором."""
+
+    name: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=150,
+        description="Новое название команды",
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=1000,
+        description="Новое описание проекта или задач команды",
+    )
+    max_members: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=50,
+        description="Новый желаемый размер команды",
+    )
+    needed_roles: Optional[List[ParticipantSpecialization]] = Field(
+        default=None,
+        description="Обновленный список специализаций 'Ищем'",
+    )
+    allow_auto_match: Optional[bool] = Field(
+        default=None,
+        description="Обновленный флаг разрешения автораспределения",
+    )
+
+
+# =====================================================================
+# Схемы чтения команд
+# =====================================================================
+
+
+class TeamRead(BaseModel):
+    """Схема чтения информации о команде для каталога команд мероприятия."""
+
+    id: uuid.UUID
+    event_id: uuid.UUID
+    name: str
+    description: Optional[str] = None
+    captain_id: uuid.UUID
+    max_members: int
+    needed_roles: List[ParticipantSpecialization] = []
+    existing_roles: List[ParticipantSpecialization] = []
+    members_count: int = 0
+    members: List[TeamMemberRead] = []
+    allow_auto_match: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def transform_team_orm(cls, data: Any) -> Any:
+        """Динамически формирует список участников, вычисляет existing_roles и members_count."""
+        # Если data — словарь (например, уже сериализованные данные)
+        if isinstance(data, dict):
+            return data
+
+        # Если data — объект ORM модели Team
+        if hasattr(data, "members") and hasattr(data, "captain_id"):
+            members_list: List[Dict[str, Any]] = []
+            existing_roles_seen = set()
+            existing_roles_list: List[str] = []
+
+            for reg in getattr(data, "members", []):
+                user = getattr(reg, "user", None)
+                if user:
+                    is_captain = reg.user_id == data.captain_id
+                    user_specs = getattr(user, "specializations", []) or []
+                    user_skills = getattr(user, "skills", []) or []
+
+                    members_list.append(
+                        {
+                            "user_id": user.id,
+                            "full_name": user.full_name,
+                            "nickname": user.nickname,
+                            "avatar_url": user.avatar_url,
+                            "is_captain": is_captain,
+                            "specializations": user_specs,
+                            "skills": user_skills,
+                            "telegram_username": user.telegram_username,
+                            "joined_team_at": reg.joined_team_at,
+                        }
+                    )
+
+                    # Собираем канонические специализации участников в 'Уже есть' (строго user_specs, без skills)
+                    for tag in list(user_specs):
+                        if tag and tag not in existing_roles_seen:
+                            existing_roles_seen.add(tag)
+                            existing_roles_list.append(tag)
+
+            return {
+                "id": data.id,
+                "event_id": data.event_id,
+                "name": data.name,
+                "description": data.description,
+                "captain_id": data.captain_id,
+                "max_members": data.max_members,
+                "needed_roles": data.needed_roles or [],
+                "existing_roles": existing_roles_list,
+                "members_count": len(members_list),
+                "members": members_list,
+                "allow_auto_match": data.allow_auto_match,
+                "created_at": data.created_at,
+                "invite_token": getattr(data, "invite_token", None),
+            }
+
+        return data
+
+
+class TeamDetailRead(TeamRead):
+    """Детальная схема команды (включает invite_token для участников и статус текущего пользователя)."""
+
+    invite_token: Optional[str] = Field(
+        default=None,
+        description="Секретный токен для прямого приглашения (доступен участникам команды и организаторам)",
+    )
+    is_user_member: bool = Field(
+        default=False,
+        description="Состоит ли текущий авторизованный пользователь в этой команде",
+    )
+    is_user_captain: bool = Field(
+        default=False,
+        description="Является ли текущий авторизованный пользователь капитаном этой команды",
+    )
+
+
+# =====================================================================
+# Схемы фильтрации
+# =====================================================================
+
+
+class TeamFilterParams(BaseModel):
+    """Параметры фильтрации каталога команд мероприятия."""
+
+    needed_role: Optional[ParticipantSpecialization] = Field(
+        default=None,
+        description="Фильтр: команды, которые ищут указанную специализацию",
+    )
+    has_free_slots: Optional[bool] = Field(
+        default=None,
+        description="Фильтр: только команды с незаполненными позициями",
+    )
+
+
+=== FILE: backend\src\schemas\upload.py ===
+"""Pydantic-схемы для загрузки медиа-файлов."""
+
+from pydantic import BaseModel, Field
+
+
+class ImageUploadResponse(BaseModel):
+    """Схема ответа после успешной загрузки изображения."""
+
+    url: str = Field(
+        ...,
+        description="URL загруженного изображения для сохранения в профиле или мероприятии",
+    )
+
+
+=== FILE: backend\src\schemas\__init__.py ===
+"""Pydantic DTO схемы приложения."""
+
+from schemas.common import PaginatedResponse
+from schemas.event import (
+    EventCreate,
+    EventDetailRead,
+    EventRead,
+    EventRegistrationCreate,
+    EventRegistrationRead,
+    EventUpdate,
+    SoloParticipantRead,
+    UserEventItemRead,
+)
+from schemas.team import (
+    TeamCreate,
+    TeamDetailRead,
+    TeamMemberRead,
+    TeamRead,
+    TeamUpdate,
+)
+from schemas.upload import ImageUploadResponse
+
+__all__ = [
+    "PaginatedResponse",
+    "ImageUploadResponse",
+    "EventCreate",
+    "EventUpdate",
+    "EventRead",
+    "EventDetailRead",
+    "EventRegistrationCreate",
+    "EventRegistrationRead",
+    "SoloParticipantRead",
+    "UserEventItemRead",
+    "TeamCreate",
+    "TeamUpdate",
+    "TeamRead",
+    "TeamDetailRead",
+    "TeamMemberRead",
+]
+
+
+=== FILE: backend\src\services\event_services.py ===
+"""Сервисный слой для работы с мероприятиями и регистрациями участников."""
+
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+from models.enums import EventStatus
+from models.event import Event, EventRegistration
+from schemas.common import PaginatedResponse
+from schemas.event import EventRegistrationCreate
+from utils.exceptions import (
+    EntityNotFoundError,
+    InvalidStateError,
+)
+from utils.uow import IUnitOfWork
+
+
+class EventServices:
+    """Сервис управления мероприятиями, регистрациями и каталогом участников."""
+
+    def __init__(self, uow: IUnitOfWork) -> None:
+        self.uow = uow
+
+    # ------------------------------------------------------------------
+    # Ленивая смена статусов хакатона (Lazy Transitions)
+    # ------------------------------------------------------------------
+
+    async def _apply_lazy_status_transitions(self, event: Event) -> None:
+        """Автоматический перевод этапа хакатона при наступлении дедлайнов.
+
+        1. REGISTRATION -> TEAM_LOCK (по истечении registration_end) с отменой висящих заявок.
+        2. SUBMISSION -> FINISHED (по истечении submission_deadline).
+        """
+        now = datetime.now(timezone.utc)
+        status_changed = False
+
+        if event.status == EventStatus.REGISTRATION and now > event.registration_end:
+            event.status = EventStatus.TEAM_LOCK
+            await self.uow.events.update(event.id, {"status": EventStatus.TEAM_LOCK})
+            # Автоматическая отмена всех незавершенных заявок и инвайтов
+            await self.uow.requests.cancel_all_event_pending_requests(event.id)
+            status_changed = True
+
+        elif event.status == EventStatus.SUBMISSION and now > event.submission_deadline:
+            event.status = EventStatus.FINISHED
+            await self.uow.events.update(event.id, {"status": EventStatus.FINISHED})
+            status_changed = True
+
+        if status_changed:
+            await self.uow.commit()
+
+    # ------------------------------------------------------------------
+    # Валидация кастомных полей анкеты
+    # ------------------------------------------------------------------
+
+    def _validate_custom_answers(
+        self,
+        schema: Optional[Any],
+        answers: Optional[Dict[str, Any]],
+    ) -> None:
+        """Проверяет соответствие ответов участника схеме анкеты хакатона."""
+        if not schema:
+            return
+
+        answers_dict = answers or {}
+        # Схема может быть списком словарей полей
+        fields_list = schema if isinstance(schema, list) else schema.get("fields", [])
+
+        for field in fields_list:
+            if not isinstance(field, dict):
+                continue
+
+            field_id = field.get("id")
+            field_label = field.get("label", field_id)
+            is_required = field.get("required", False)
+            field_type = field.get("type", "text")
+            options = field.get("options", [])
+
+            value = answers_dict.get(field_id)
+
+            # Проверка обязательности поля
+            if is_required and (value is None or (isinstance(value, str) and not value.strip())):
+                raise InvalidStateError(
+                    f"Обязательное поле анкеты '{field_label}' не заполнено"
+                )
+
+            # Проверка допустимых опций для select
+            if value is not None and field_type == "select" and options:
+                if value not in options:
+                    raise InvalidStateError(
+                        f"Недопустимое значение для поля '{field_label}'. "
+                        f"Допустимые варианты: {', '.join(map(str, options))}"
+                    )
+
+    # ------------------------------------------------------------------
+    # Каталог мероприятий (главная страница)
+    # ------------------------------------------------------------------
+
+    async def get_public_events(
+        self,
+        is_featured: Optional[bool] = None,
+        status: Optional[EventStatus] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> PaginatedResponse[Event]:
+        """Получить список публичных мероприятий с пагинацией и проверкой дедлайнов."""
+        offset = (page - 1) * size
+        async with self.uow:
+            events = await self.uow.events.get_public_events(
+                is_featured=is_featured,
+                status=status,
+                limit=size,
+                offset=offset,
+            )
+            # Применяем ленивые переходы для отображаемых событий
+            for ev in events:
+                await self._apply_lazy_status_transitions(ev)
+
+            total = await self.uow.events.count_public_events(
+                is_featured=is_featured,
+                status=status,
+            )
+            return PaginatedResponse.create(
+                items=events,
+                total=total,
+                page=page,
+                size=size,
+            )
+
+    # ------------------------------------------------------------------
+    # Детальная страница мероприятия
+    # ------------------------------------------------------------------
+
+    async def get_event_detail(
+        self,
+        identifier: str,
+        current_user_id: Optional[uuid.UUID] = None,
+    ) -> dict:
+        """Получить детальную информацию о мероприятии."""
+        async with self.uow:
+            event = await self.uow.events.get_by_id_or_invite_code(identifier)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие '{identifier}' не найдено")
+
+            await self._apply_lazy_status_transitions(event)
+
+            my_registration = None
+            if current_user_id is not None:
+                my_registration = await self.uow.registrations.get_by_event_and_user(
+                    event_id=event.id,
+                    user_id=current_user_id,
+                )
+
+            return {
+                "event": event,
+                "my_registration": my_registration,
+            }
+
+    # ------------------------------------------------------------------
+    # Регистрация участника на мероприятие
+    # ------------------------------------------------------------------
+
+    async def register_for_event(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+        registration_data: EventRegistrationCreate,
+    ) -> EventRegistration:
+        """Зарегистрировать участника на мероприятие."""
+        async with self.uow:
+            event = await self.uow.events.find_one_or_none(id=event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {event_id} не найдено")
+
+            # Проверяем и применяем переход дедлайна
+            await self._apply_lazy_status_transitions(event)
+
+            if event.status != EventStatus.REGISTRATION:
+                raise InvalidStateError(
+                    "Регистрация на это мероприятие закрыта "
+                    f"(текущий статус: {event.status.value})"
+                )
+
+            now = datetime.now(timezone.utc)
+            if now > event.registration_end:
+                raise InvalidStateError("Срок регистрации на мероприятие истек")
+
+            # Валидируем кастомные ответы анкеты хакатона
+            self._validate_custom_answers(
+                event.custom_fields_schema,
+                registration_data.custom_answers,
+            )
+
+            # Проверяем, что пользователь ещё не зарегистрирован
+            existing = await self.uow.registrations.get_by_event_and_user(
+                event_id=event_id,
+                user_id=user_id,
+            )
+            if existing:
+                raise InvalidStateError("Вы уже зарегистрированы на это мероприятие")
+
+            registration = await self.uow.registrations.add_one(
+                {
+                    "event_id": event_id,
+                    "user_id": user_id,
+                    "custom_answers": registration_data.custom_answers,
+                }
+            )
+            await self.uow.commit()
+            return registration
+
+    # ------------------------------------------------------------------
+    # Каталог свободных участников (одиночки)
+    # ------------------------------------------------------------------
+
+    async def get_solo_participants(
+        self,
+        event_id: uuid.UUID,
+        tags: Optional[List[str]] = None,
+        page: int = 1,
+        size: int = 20,
+    ) -> PaginatedResponse[EventRegistration]:
+        """Получить каталог свободных участников без команды с пагинацией."""
+        offset = (page - 1) * size
+        async with self.uow:
+            event = await self.uow.events.find_one_or_none(id=event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {event_id} не найдено")
+
+            await self._apply_lazy_status_transitions(event)
+
+            items = await self.uow.registrations.get_solo_participants(
+                event_id=event_id,
+                tags=tags,
+                limit=size,
+                offset=offset,
+            )
+            total = await self.uow.registrations.count_solo_participants(
+                event_id=event_id,
+                tags=tags,
+            )
+            return PaginatedResponse.create(
+                items=items,
+                total=total,
+                page=page,
+                size=size,
+            )
+
+    # ------------------------------------------------------------------
+    # Мероприятия текущего пользователя
+    # ------------------------------------------------------------------
+
+    async def get_user_events(
+        self,
+        user_id: uuid.UUID,
+    ) -> List[EventRegistration]:
+        """Получить список мероприятий, на которые зарегистрирован пользователь."""
+        async with self.uow:
+            return await self.uow.registrations.get_user_registrations(
+                user_id=user_id,
+            )
+
+
+=== FILE: backend\src\services\upload_services.py ===
+"""Сервис для валидации и сохранения загружаемых медиа-файлов."""
+
+import hashlib
+import secrets
+from pathlib import Path
+from typing import Set
+
+from fastapi import UploadFile
+from PIL import Image
+
+from utils.exceptions import InvalidStateError
+
+# Разрешенные MIME-типы и расширения
+ALLOWED_IMAGE_TYPES: Set[str] = {"image/jpeg", "image/png", "image/webp"}
+MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5 Мегабайт
+
+# Директория загрузки статики: backend/static/uploads/
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+UPLOAD_DIR = BASE_DIR / "static" / "uploads"
+
+
+class UploadServices:
+    """Сервис обработки медиа-файлов."""
+
+    def __init__(self, upload_dir: Path = UPLOAD_DIR):
+        self.upload_dir = upload_dir
+        self.upload_dir.mkdir(parents=True, exist_ok=True)
+
+    async def save_image(self, file: UploadFile) -> str:
+        """Валидирует и сохраняет загруженное изображение.
+
+        Возвращает относительный URL для доступа к файлу.
+        """
+        # 1. Проверка Content-Type
+        if file.content_type not in ALLOWED_IMAGE_TYPES:
+            raise InvalidStateError(
+                f"Неподдерживаемый формат файла '{file.content_type}'. "
+                "Разрешены только JPEG, PNG и WebP."
+            )
+
+        # 2. Чтение содержимого с проверкой размера
+        contents = await file.read()
+        if len(contents) > MAX_IMAGE_SIZE_BYTES:
+            raise InvalidStateError(
+                f"Превышен допустимый размер файла ({len(contents) / (1024 * 1024):.1f} МБ). "
+                "Максимальный размер: 5 МБ."
+            )
+
+        # 3. Валидация целостности картинки через Pillow
+        try:
+            import io
+            image = Image.open(io.BytesIO(contents))
+            image.verify()
+        except Exception:
+            raise InvalidStateError("Файл поврежден или не является валидным изображением")
+
+        # 4. Формирование уникального имени файла
+        ext = file.filename.split(".")[-1].lower() if file.filename and "." in file.filename else "webp"
+        if ext not in ("jpg", "jpeg", "png", "webp"):
+            ext = "webp"
+
+        file_hash = hashlib.sha256(contents).hexdigest()[:16]
+        unique_name = f"{file_hash}_{secrets.token_hex(4)}.{ext}"
+        destination_path = self.upload_dir / unique_name
+
+        # 5. Запись на диск
+        with open(destination_path, "wb") as f:
+            f.write(contents)
+
+        return f"/static/uploads/{unique_name}"
+
+
+=== FILE: backend\src\services\user_services.py ===
+"""Сервисный слой для работы с профилями пользователей и привязкой Telegram."""
+
+from datetime import datetime, timedelta, timezone
+import secrets
+import uuid
+from typing import Optional
+
+from auth.auth import password_helper
+from auth.schemas import UserPasswordChange, UserUpdate
+from config import BOT_USERNAME
+from models.user import User
+from utils.exceptions import EntityNotFoundError, InvalidStateError
+from utils.uow import IUnitOfWork
+
+
+class UserServices:
+    """Сервис управления пользователями и интеграцией с Telegram."""
+
+    def __init__(self, uow: IUnitOfWork) -> None:
+        self.uow = uow
+
+    async def get_user_by_id(self, user_id: uuid.UUID) -> User:
+        """Получить пользователя по ID."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+            return user
+
+    async def update_profile(self, user_id: uuid.UUID, user_data: UserUpdate) -> User:
+        """Обновить поля профиля пользователя (без смены пароля)."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            update_data = user_data.model_dump(exclude_unset=True)
+            updated_user = await self.uow.users.update(user_id, update_data)
+            await self.uow.commit()
+            return updated_user
+
+    async def change_password(
+        self,
+        user_id: uuid.UUID,
+        password_data: UserPasswordChange,
+    ) -> None:
+        """Безопасная смена пароля с подтверждением старого пароля."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            # 1. Проверяем корректность старого пароля
+            verified, _ = password_helper.verify_and_update(
+                password_data.old_password, user.hashed_password
+            )
+            if not verified:
+                raise InvalidStateError("Неверный текущий пароль")
+
+            # 2. Новый пароль не должен совпадать с текущим
+            if password_data.old_password == password_data.new_password:
+                raise InvalidStateError("Новый пароль не должен совпадать с текущим")
+
+            # 3. Хэшируем и сохраняем новый пароль
+            hashed_password = password_helper.hash(password_data.new_password)
+            await self.uow.users.update(user_id, {"hashed_password": hashed_password})
+            await self.uow.commit()
+
+    async def generate_telegram_bind_link(self, user_id: uuid.UUID) -> str:
+        """Сгенерировать одноразовую deep-link ссылку для привязки Telegram-бота с TTL 15 минут."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            bind_token = f"bind_{secrets.token_hex(16)}"
+            expires_at = datetime.now(timezone.utc) + timedelta(minutes=15)
+            await self.uow.users.update(
+                user_id,
+                {
+                    "telegram_bind_token": bind_token,
+                    "telegram_bind_token_expires_at": expires_at,
+                },
+            )
+            await self.uow.commit()
+
+            bot_name = BOT_USERNAME.lstrip("@")
+            return f"https://t.me/{bot_name}?start={bind_token}"
+
+    async def bind_telegram(
+        self,
+        token: str,
+        telegram_id: int,
+        telegram_username: Optional[str],
+    ) -> User:
+        """Привязать Telegram-аккаунт к пользователю по одноразовому токену."""
+        async with self.uow:
+            user = await self.uow.users.find_one_or_none(telegram_bind_token=token)
+            if not user:
+                raise InvalidStateError(
+                    "Недействительный или истекший токен привязки Telegram"
+                )
+
+            # Проверяем срок жизни токена (TTL 15 минут)
+            if user.telegram_bind_token_expires_at:
+                now = datetime.now(timezone.utc)
+                if now > user.telegram_bind_token_expires_at:
+                    raise InvalidStateError(
+                        "Срок действия токена привязки Telegram истек (15 минут). Запросите новую ссылку в личном кабинете."
+                    )
+
+            # Проверяем, не привязан ли этот Telegram ID к другому пользователю
+            existing_user = await self.uow.users.find_one_or_none(
+                telegram_id=telegram_id
+            )
+            if existing_user and existing_user.id != user.id:
+                raise InvalidStateError(
+                    "Данный Telegram-аккаунт уже привязан к другому профилю"
+                )
+
+            update_data = {
+                "telegram_id": telegram_id,
+                "telegram_username": telegram_username,
+                "is_bot_active": True,
+                "telegram_bind_token": None,
+                "telegram_bind_token_expires_at": None,
+            }
+            updated_user = await self.uow.users.update(user.id, update_data)
+            await self.uow.commit()
+            return updated_user
+
+
+=== FILE: backend\src\services\__init__.py ===
+"""Сервисы бизнес-логики приложения."""
+
+from services.event_services import EventServices
+from services.upload_services import UploadServices
+from services.user_services import UserServices
+
+__all__ = [
+    "UserServices",
+    "EventServices",
+    "UploadServices",
+]
+
+
+=== FILE: backend\src\utils\exceptions.py ===
+"""Кастомные доменные исключения платформы."""
+
+
+class DomainError(Exception):
+    """Базовое доменное исключение."""
+
+    def __init__(self, message: str = "Произошла ошибка доменной логики"):
+        self.message = message
+        super().__init__(self.message)
+
+
+class EntityNotFoundError(DomainError):
+    """Сущность не найдена в базе данных."""
+
+    def __init__(self, message: str = "Запрашиваемый ресурс не найден"):
+        super().__init__(message)
+
+
+class PermissionDeniedError(DomainError):
+    """Отказано в доступе."""
+
+    def __init__(self, message: str = "Недостаточно прав для выполнения операции"):
+        super().__init__(message)
+
+
+class TeamIsFullError(DomainError):
+    """Команда уже заполнена."""
+
+    def __init__(self, message: str = "В команде больше нет свободных мест"):
+        super().__init__(message)
+
+
+class AlreadyInTeamError(DomainError):
+    """Участник уже состоит в команде на данном мероприятии."""
+
+    def __init__(self, message: str = "Вы уже состоите в команде на этом мероприятии"):
+        super().__init__(message)
+
+
+class DeadlinePassedError(DomainError):
+    """Дедлайн операции истек."""
+
+    def __init__(self, message: str = "Срок выполнения данной операции истек"):
+        super().__init__(message)
+
+
+class InvalidStateError(DomainError):
+    """Недопустимый статус сущности или неверное состояние."""
+
+    def __init__(self, message: str = "Недопустимое состояние для выполнения операции"):
+        super().__init__(message)
+
+
+class IncompleteTeamError(DomainError):
+    """Команда не набрала минимально необходимое количество участников."""
+
+    def __init__(
+        self,
+        message: str = "Команда не набрала минимальное количество участников по регламенту мероприятия",
+    ):
+        super().__init__(message)
+
+
+=== FILE: backend\src\utils\repository.py ===
+from abc import ABC, abstractmethod
+from typing import Any
+from sqlalchemy import insert, select, delete, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+
+class AbstractRepository(ABC):
+    @abstractmethod
+    async def add_one(self, data: dict) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_all(self, **filter_by) -> list[Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_one_or_none(self, **filter_by) -> Any | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_filter(self, *filters) -> list[Any]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def update(self, id: Any, values: dict) -> Any:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_one(self, id: Any) -> Any:
+        raise NotImplementedError
+
+
+class SQLAlchemyRepository(AbstractRepository):
+    model = None
+
+    def __init__(self, session: AsyncSession):
+        # Используем ТОЛЬКО эту общую сессию от UnitOfWork во всех методах!
+        self.session = session
+
+    async def add_one(self, data: dict):
+        stmt = insert(self.model).values(**data).returning(self.model)
+        res = await self.session.execute(stmt)
+        return res.scalar_one()
+
+    async def find_all(self, **filter_by):
+        # Работает и без аргументов find_all(), и с именными фильтрами find_all(course=1)
+        stmt = select(self.model).filter_by(**filter_by)
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def find_one_or_none(self, **filter_by):
+        stmt = select(self.model).filter_by(**filter_by)
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def find_filter(self, *filters):
+        # Для сложных условий (>, <, in_): find_filter(User.course >= 2)
+        stmt = select(self.model).where(*filters)
+        res = await self.session.execute(stmt)
+        return list(res.scalars().all())
+
+    async def update(self, id: Any, values: dict):
+        stmt = (
+            update(self.model)
+            .where(self.model.id == id)
+            .values(**values)
+            .returning(self.model)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def delete_one(self, id: Any):
+        stmt = delete(self.model).where(self.model.id == id).returning(self.model.id)
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+
+=== FILE: backend\src\utils\uow.py ===
+"""Паттерн Unit of Work для управления транзакциями базы данных."""
+
+from abc import ABC, abstractmethod
+
+from database.database import async_session_maker
+from repositories.event_repo import EventRepository
+from repositories.registration_repo import EventRegistrationRepository
+from repositories.request_repo import RequestRepository
+from repositories.submission_repo import SubmissionRepository
+from repositories.team_repo import TeamRepository
+from repositories.user_repo import UserRepository
+
+
+class IUnitOfWork(ABC):
+    """Интерфейс единицы работы (Unit of Work)."""
+
+    users: UserRepository
+    events: EventRepository
+    registrations: EventRegistrationRepository
+    teams: TeamRepository
+    requests: RequestRepository
+    submissions: SubmissionRepository
+
+    @abstractmethod
+    def __init__(self): ...
+
+    @abstractmethod
+    async def __aenter__(self): ...
+
+    @abstractmethod
+    async def __aexit__(self, *args): ...
+
+    @abstractmethod
+    async def commit(self): ...
+
+    @abstractmethod
+    async def rollback(self): ...
+
+
+class UnitOfWork(IUnitOfWork):
+    """Реализация Unit of Work на базе SQLAlchemy AsyncSession."""
+
+    def __init__(self):
+        self.session_factory = async_session_maker
+
+    async def __aenter__(self):
+        # При входе в контекстный менеджер создается единая сессия для всех репозиториев
+        self.session = self.session_factory()
+        self.users = UserRepository(self.session)
+        self.events = EventRepository(self.session)
+        self.registrations = EventRegistrationRepository(self.session)
+        self.teams = TeamRepository(self.session)
+        self.requests = RequestRepository(self.session)
+        self.submissions = SubmissionRepository(self.session)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is not None:
+            await self.rollback()
+        await self.session.close()
+
+    async def commit(self):
+        """Фиксация всех изменений транзакции."""
+        await self.session.commit()
+
+    async def rollback(self):
+        """Откат транзакции при возникновении ошибки."""
+        await self.session.rollback()
+
+
+=== FILE: backend\src\migrations\versions\a1b2c3d4e5f6_make_role_in_team_nullable.py ===
+"""Удаление избыточной колонки role_in_team из таблицы event_registrations.
+
+Revision ID: a1b2c3d4e5f6
+Revises: f856f6606b48
+Create Date: 2026-11-02 11:24:00.000000
+
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# revision identifiers, used by Alembic.
+revision: str = "a1b2c3d4e5f6"
+down_revision: Union[str, None] = "f856f6606b48"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Удаление избыточной колонки role_in_team."""
+    op.drop_column("event_registrations", "role_in_team")
+
+
+def downgrade() -> None:
+    """Восстановление колонки role_in_team при откате."""
+    op.add_column(
+        "event_registrations",
+        sa.Column("role_in_team", sa.String(length=100), nullable=True),
+    )
+
+
+=== FILE: backend\src\migrations\versions\b2c3d4e5f6a7_add_user_specializations_and_team_request_message.py ===
+"""Добавление specializations в users и message в team_requests.
+
+Revision ID: b2c3d4e5f6a7
+Revises: a1b2c3d4e5f6
+Create Date: 2026-11-02 12:30:00.000000
+
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+
+# Идентификаторы ревизии, используемые Alembic.
+revision: str = "b2c3d4e5f6a7"
+down_revision: Union[str, None] = "a1b2c3d4e5f6"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Обновление схемы базы данных."""
+    # Таблица users: добавление массива specializations и удаление устаревшего primary_role
+    op.add_column(
+        "users",
+        sa.Column(
+            "specializations",
+            postgresql.ARRAY(sa.String()),
+            server_default="{}",
+            nullable=False,
+        ),
+    )
+    op.drop_column("users", "primary_role")
+
+    # Таблица team_requests: target_role становится nullable, добавляется поле message
+    op.alter_column(
+        "team_requests",
+        "target_role",
+        existing_type=sa.String(length=100),
+        nullable=True,
+    )
+    op.add_column(
+        "team_requests",
+        sa.Column("message", sa.Text(), nullable=True),
+    )
+
+
+def downgrade() -> None:
+    """Откат изменений схемы базы данных."""
+    # Таблица team_requests: удаление message и возврат target_role в NOT NULL
+    op.drop_column("team_requests", "message")
+    op.alter_column(
+        "team_requests",
+        "target_role",
+        existing_type=sa.String(length=100),
+        nullable=False,
+    )
+
+    # Таблица users: возврат primary_role и удаление specializations
+    op.add_column(
+        "users",
+        sa.Column("primary_role", sa.String(length=100), nullable=True),
+    )
+    op.drop_column("users", "specializations")
+
+
+=== FILE: backend\src\migrations\versions\c3d4e5f6a7b8_add_telegram_bind_expires_and_active_request_index.py ===
+"""Добавление telegram_bind_token_expires_at в users и индекса uq_active_team_user_request в team_requests.
+
+Revision ID: c3d4e5f6a7b8
+Revises: b2c3d4e5f6a7
+Create Date: 2026-11-09 12:00:00.000000
+
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+import sqlalchemy as sa
+
+
+# Идентификаторы ревизии, используемые Alembic.
+revision: str = "c3d4e5f6a7b8"
+down_revision: Union[str, None] = "b2c3d4e5f6a7"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Обновление схемы базы данных."""
+    # Таблица users: добавление срока жизни токена привязки Telegram
+    op.add_column(
+        "users",
+        sa.Column(
+            "telegram_bind_token_expires_at",
+            sa.TIMESTAMP(timezone=True),
+            nullable=True,
+        ),
+    )
+
+    # Таблица team_requests: частичный уникальный индекс для защиты от встречных заявок
+    op.create_index(
+        "uq_active_team_user_request",
+        "team_requests",
+        ["team_id", "user_id"],
+        unique=True,
+        postgresql_where=sa.text("status IN ('PENDING_CAPTAIN', 'PENDING_USER')"),
+    )
+
+
+def downgrade() -> None:
+    """Откат изменений схемы базы данных."""
+    # Таблица team_requests: удаление индекса
+    op.drop_index("uq_active_team_user_request", table_name="team_requests")
+
+    # Таблица users: удаление колонки telegram_bind_token_expires_at
+    op.drop_column("users", "telegram_bind_token_expires_at")
+
+
+=== FILE: backend\src\migrations\versions\f856f6606b48_initial_schema_all_tables.py ===
+"""initial_schema_all_tables
+
+Revision ID: f856f6606b48
+Revises:
+Create Date: 2026-10-30 12:29:47.459817
+
+"""
+
+from typing import Sequence, Union
+
+from alembic import op
+import fastapi_users_db_sqlalchemy
+import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
+
+# revision identifiers, used by Alembic.
+revision: str = "f856f6606b48"
+down_revision: Union[str, None] = None
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.create_table(
+        "users",
+        sa.Column(
+            "role",
+            sa.Enum(
+                "PARTICIPANT",
+                "ORGANIZER",
+                "ADMIN",
+                name="user_role_enum",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column("full_name", sa.String(length=255), nullable=False),
+        sa.Column("nickname", sa.String(length=100), nullable=True),
+        sa.Column("avatar_url", sa.String(length=512), nullable=True),
+        sa.Column("university", sa.String(length=255), nullable=True),
+        sa.Column("study_group", sa.String(length=100), nullable=True),
+        sa.Column("course", sa.SmallInteger(), nullable=True),
+        sa.Column("bio", sa.Text(), nullable=True),
+        sa.Column(
+            "skills", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False
+        ),
+        sa.Column("primary_role", sa.String(length=100), nullable=True),
+        sa.Column("vk_url", sa.String(length=255), nullable=True),
+        sa.Column("github_url", sa.String(length=255), nullable=True),
+        sa.Column("telegram_id", sa.BigInteger(), nullable=True),
+        sa.Column("telegram_username", sa.String(length=100), nullable=True),
+        sa.Column("telegram_bind_token", sa.String(length=64), nullable=True),
+        sa.Column("is_bot_active", sa.Boolean(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column("id", fastapi_users_db_sqlalchemy.generics.GUID(), nullable=False),
+        sa.Column("email", sa.String(length=320), nullable=False),
+        sa.Column("hashed_password", sa.String(length=1024), nullable=False),
+        sa.Column("is_active", sa.Boolean(), nullable=False),
+        sa.Column("is_superuser", sa.Boolean(), nullable=False),
+        sa.Column("is_verified", sa.Boolean(), nullable=False),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_users_email"), "users", ["email"], unique=True)
+    op.create_index(
+        op.f("ix_users_telegram_bind_token"),
+        "users",
+        ["telegram_bind_token"],
+        unique=True,
+    )
+    op.create_index(op.f("ix_users_telegram_id"), "users", ["telegram_id"], unique=True)
+    op.create_table(
+        "events",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("title", sa.String(length=255), nullable=False),
+        sa.Column("short_description", sa.String(length=500), nullable=False),
+        sa.Column("description_md", sa.Text(), nullable=False),
+        sa.Column("organizer_name", sa.String(length=255), nullable=False),
+        sa.Column("organizer_id", sa.UUID(), nullable=False),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "DRAFT",
+                "REGISTRATION",
+                "TEAM_LOCK",
+                "SUBMISSION",
+                "FINISHED",
+                name="event_status_enum",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "format",
+            sa.Enum(
+                "OFFLINE",
+                "ONLINE",
+                "HYBRID",
+                name="event_format_enum",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "tags", postgresql.ARRAY(sa.String()), server_default="{}", nullable=False
+        ),
+        sa.Column("banner_url", sa.String(length=512), nullable=True),
+        sa.Column(
+            "theme_color", sa.String(length=7), server_default="#0044FF", nullable=False
+        ),
+        sa.Column("is_public", sa.Boolean(), server_default="true", nullable=False),
+        sa.Column("is_featured", sa.Boolean(), server_default="false", nullable=False),
+        sa.Column("invite_code", sa.String(length=32), nullable=False),
+        sa.Column("min_team_size", sa.SmallInteger(), nullable=False),
+        sa.Column("max_team_size", sa.SmallInteger(), nullable=False),
+        sa.Column("registration_start", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column("registration_end", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column("event_start", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column("submission_deadline", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column("event_end", sa.TIMESTAMP(timezone=True), nullable=False),
+        sa.Column(
+            "custom_fields_schema",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=True,
+        ),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["organizer_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_events_invite_code"), "events", ["invite_code"], unique=True
+    )
+    op.create_table(
+        "teams",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("event_id", sa.UUID(), nullable=False),
+        sa.Column("name", sa.String(length=150), nullable=False),
+        sa.Column("description", sa.Text(), nullable=True),
+        sa.Column("captain_id", sa.UUID(), nullable=False),
+        sa.Column("max_members", sa.SmallInteger(), nullable=False),
+        sa.Column(
+            "needed_roles",
+            postgresql.ARRAY(sa.String()),
+            server_default="{}",
+            nullable=False,
+        ),
+        sa.Column(
+            "allow_auto_match", sa.Boolean(), server_default="true", nullable=False
+        ),
+        sa.Column("invite_token", sa.String(length=64), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["captain_id"], ["users.id"], ondelete="RESTRICT"),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(op.f("ix_teams_captain_id"), "teams", ["captain_id"], unique=False)
+    op.create_index(op.f("ix_teams_event_id"), "teams", ["event_id"], unique=False)
+    op.create_index(
+        op.f("ix_teams_invite_token"), "teams", ["invite_token"], unique=True
+    )
+    op.create_table(
+        "event_registrations",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("event_id", sa.UUID(), nullable=False),
+        sa.Column("user_id", sa.UUID(), nullable=False),
+        sa.Column("team_id", sa.UUID(), nullable=True),
+        sa.Column("role_in_team", sa.String(length=100), nullable=False),
+        sa.Column(
+            "custom_answers", postgresql.JSONB(astext_type=sa.Text()), nullable=True
+        ),
+        sa.Column("joined_team_at", sa.TIMESTAMP(timezone=True), nullable=True),
+        sa.Column(
+            "registered_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="SET NULL"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+        sa.UniqueConstraint("event_id", "user_id", name="uq_event_user"),
+    )
+    op.create_index(
+        op.f("ix_event_registrations_event_id"),
+        "event_registrations",
+        ["event_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_event_registrations_team_id"),
+        "event_registrations",
+        ["team_id"],
+        unique=False,
+    )
+    op.create_index(
+        op.f("ix_event_registrations_user_id"),
+        "event_registrations",
+        ["user_id"],
+        unique=False,
+    )
+    op.create_table(
+        "submissions",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("event_id", sa.UUID(), nullable=False),
+        sa.Column("team_id", sa.UUID(), nullable=False),
+        sa.Column("submitted_by_user_id", sa.UUID(), nullable=False),
+        sa.Column("github_url", sa.String(length=512), nullable=False),
+        sa.Column("presentation_url", sa.String(length=512), nullable=True),
+        sa.Column("demo_url", sa.String(length=512), nullable=True),
+        sa.Column("comment", sa.Text(), nullable=True),
+        sa.Column(
+            "submitted_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(
+            ["submitted_by_user_id"], ["users.id"], ondelete="CASCADE"
+        ),
+        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_submissions_event_id"), "submissions", ["event_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_submissions_team_id"), "submissions", ["team_id"], unique=True
+    )
+    op.create_table(
+        "team_requests",
+        sa.Column("id", sa.UUID(), nullable=False),
+        sa.Column("event_id", sa.UUID(), nullable=False),
+        sa.Column("team_id", sa.UUID(), nullable=False),
+        sa.Column("user_id", sa.UUID(), nullable=False),
+        sa.Column("target_role", sa.String(length=100), nullable=False),
+        sa.Column(
+            "request_type",
+            sa.Enum(
+                "APPLICATION",
+                "INVITE",
+                name="team_request_type_enum",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "status",
+            sa.Enum(
+                "PENDING_CAPTAIN",
+                "PENDING_USER",
+                "ACCEPTED",
+                "REJECTED",
+                "CANCELLED",
+                name="team_request_status_enum",
+                native_enum=False,
+            ),
+            nullable=False,
+        ),
+        sa.Column(
+            "created_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.Column(
+            "updated_at",
+            sa.TIMESTAMP(timezone=True),
+            server_default=sa.text("now()"),
+            nullable=False,
+        ),
+        sa.ForeignKeyConstraint(["event_id"], ["events.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["team_id"], ["teams.id"], ondelete="CASCADE"),
+        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
+        sa.PrimaryKeyConstraint("id"),
+    )
+    op.create_index(
+        op.f("ix_team_requests_event_id"), "team_requests", ["event_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_team_requests_team_id"), "team_requests", ["team_id"], unique=False
+    )
+    op.create_index(
+        op.f("ix_team_requests_user_id"), "team_requests", ["user_id"], unique=False
+    )
+    # ### end Alembic commands ###
+
+
+def downgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f("ix_team_requests_user_id"), table_name="team_requests")
+    op.drop_index(op.f("ix_team_requests_team_id"), table_name="team_requests")
+    op.drop_index(op.f("ix_team_requests_event_id"), table_name="team_requests")
+    op.drop_table("team_requests")
+    op.drop_index(op.f("ix_submissions_team_id"), table_name="submissions")
+    op.drop_index(op.f("ix_submissions_event_id"), table_name="submissions")
+    op.drop_table("submissions")
+    op.drop_index(
+        op.f("ix_event_registrations_user_id"), table_name="event_registrations"
+    )
+    op.drop_index(
+        op.f("ix_event_registrations_team_id"), table_name="event_registrations"
+    )
+    op.drop_index(
+        op.f("ix_event_registrations_event_id"), table_name="event_registrations"
+    )
+    op.drop_table("event_registrations")
+    op.drop_index(op.f("ix_teams_invite_token"), table_name="teams")
+    op.drop_index(op.f("ix_teams_event_id"), table_name="teams")
+    op.drop_index(op.f("ix_teams_captain_id"), table_name="teams")
+    op.drop_table("teams")
+    op.drop_index(op.f("ix_events_invite_code"), table_name="events")
+    op.drop_table("events")
+    op.drop_index(op.f("ix_users_telegram_id"), table_name="users")
+    op.drop_index(op.f("ix_users_telegram_bind_token"), table_name="users")
+    op.drop_index(op.f("ix_users_email"), table_name="users")
+    op.drop_table("users")
+    # ### end Alembic commands ###

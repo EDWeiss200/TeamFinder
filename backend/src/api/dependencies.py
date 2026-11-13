@@ -5,6 +5,7 @@ from auth.auth import current_user
 from models.enums import UserRole
 from models.user import User
 from services.event_services import EventServices
+from services.team_services import TeamServices
 from services.upload_services import UploadServices
 from services.user_services import UserServices
 from utils.exceptions import PermissionDeniedError
@@ -24,6 +25,11 @@ def user_service(uow: IUnitOfWork = Depends(get_uow)) -> UserServices:
 def event_service(uow: IUnitOfWork = Depends(get_uow)) -> EventServices:
     """Провайдер сервиса мероприятий с инъекцией Unit of Work."""
     return EventServices(uow)
+
+
+def team_service(uow: IUnitOfWork = Depends(get_uow)) -> TeamServices:
+    """Провайдер сервиса команд с инъекцией Unit of Work."""
+    return TeamServices(uow)
 
 
 def upload_service() -> UploadServices:

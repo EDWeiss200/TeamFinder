@@ -37,7 +37,7 @@ def upgrade() -> None:
         "team_requests",
         ["team_id", "user_id"],
         unique=True,
-        postgresql_where=sa.text("status IN ('pending_captain', 'pending_user')"),
+        postgresql_where=sa.text("status IN ('PENDING_CAPTAIN', 'PENDING_USER')"),
     )
 
 

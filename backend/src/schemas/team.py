@@ -209,3 +209,21 @@ class TeamDetailRead(TeamRead):
         default=False,
         description="Является ли текущий авторизованный пользователь капитаном этой команды",
     )
+
+
+# =====================================================================
+# Схемы фильтрации
+# =====================================================================
+
+
+class TeamFilterParams(BaseModel):
+    """Параметры фильтрации каталога команд мероприятия."""
+
+    needed_role: Optional[ParticipantSpecialization] = Field(
+        default=None,
+        description="Фильтр: команды, которые ищут указанную специализацию",
+    )
+    has_free_slots: Optional[bool] = Field(
+        default=None,
+        description="Фильтр: только команды с незаполненными позициями",
+    )

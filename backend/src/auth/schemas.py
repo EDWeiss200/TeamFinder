@@ -70,3 +70,24 @@ class UserPasswordChange(BaseModel):
     new_password: str = Field(
         ..., min_length=8, description="Новый пароль (минимум 8 символов)"
     )
+
+
+class UserPublicRead(BaseModel):
+    """Публичный профиль участника (без email и telegram_id)."""
+    id: uuid.UUID
+    role: UserRole
+    full_name: str
+    nickname: Optional[str] = None
+    avatar_url: Optional[str] = None
+    university: Optional[str] = None
+    study_group: Optional[str] = None
+    course: Optional[int] = None
+    bio: Optional[str] = None
+    skills: List[str] = []
+    specializations: List[ParticipantSpecialization] = []
+    vk_url: Optional[str] = None
+    github_url: Optional[str] = None
+    telegram_username: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)

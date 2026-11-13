@@ -26,7 +26,7 @@ cookie_transport = CookieTransport(
 )
 
 # Транспорт через заголовок Authorization: Bearer <token>
-bearer_transport = BearerTransport(tokenUrl="auth/jwt/login")
+bearer_transport = BearerTransport(tokenUrl="/api/v1/auth/bearer/login")
 
 
 def get_jwt_strategy() -> JWTStrategy:

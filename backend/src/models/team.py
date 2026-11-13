@@ -103,7 +103,7 @@ class TeamRequest(Base):
             "team_id",
             "user_id",
             unique=True,
-            postgresql_where=text("status IN ('pending_captain', 'pending_user')"),
+            postgresql_where=text("status IN ('PENDING_CAPTAIN', 'PENDING_USER')"),
         ),
     )
 

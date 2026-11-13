@@ -82,6 +82,23 @@ class EventRegistrationRepository(SQLAlchemyRepository):
         return res.scalar_one() or 0
 
 
+    async def get_by_event_and_user_for_update(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> Optional[EventRegistration]:
+        """Найти регистрацию с пессимистичной блокировкой (SELECT FOR UPDATE) для защиты от Race Condition."""
+        stmt = (
+            select(self.model)
+            .where(
+                self.model.event_id == event_id,
+                self.model.user_id == user_id,
+            )
+            .with_for_update()
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
     async def get_by_event_and_user(
         self,
         event_id: uuid.UUID,

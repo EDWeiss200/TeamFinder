@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 
 from api.dependencies import event_service, user_service
 from auth.auth import current_user
-from auth.schemas import UserPasswordChange, UserRead, UserUpdate
+from auth.schemas import UserPasswordChange, UserRead, UserUpdate, UserPublicRead
 from models.user import User
 from schemas.event import UserEventItemRead
 from services.event_services import EventServices
@@ -98,7 +98,7 @@ async def get_my_events(
 
 @router.get(
     "/{user_id}",
-    response_model=UserRead,
+    response_model=UserPublicRead,
     summary="Получить публичный профиль пользователя по ID",
 )
 async def get_user_by_id(

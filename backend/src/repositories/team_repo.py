@@ -59,6 +59,14 @@ class TeamRepository(SQLAlchemyRepository):
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
 
+    async def count_by_event(self, event_id: uuid.UUID) -> int:
+        """Подсчёт команд мероприятия для пагинации."""
+        stmt = select(func.count(self.model.id)).where(
+            self.model.event_id == event_id
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one() or 0
+
     async def get_by_invite_token(self, invite_token: str) -> Optional[Team]:
         """Найти команду по секретному токену ссылки-приглашения (с предзагрузкой участников и события)."""
         stmt = (
