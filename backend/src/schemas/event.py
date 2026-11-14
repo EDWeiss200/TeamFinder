@@ -48,13 +48,7 @@ class EventRegistrationCreate(BaseModel):
     )
 
     model_config = ConfigDict(
-        json_schema_extra={
-            "example": {
-                "custom_answers": {
-                    "additionalProp1": "value"
-                }
-            }
-        }
+        json_schema_extra={"example": {"custom_answers": {"additionalProp1": "value"}}}
     )
 
 

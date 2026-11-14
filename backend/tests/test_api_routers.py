@@ -69,7 +69,9 @@ async def test_get_me_returns_full_private_profile(async_client: AsyncClient):
     assert data["telegram_id"] == 111222333
 
 
-async def test_solo_participants_merges_specialization_skills_and_tags(async_client: AsyncClient):
+async def test_solo_participants_merges_specialization_skills_and_tags(
+    async_client: AsyncClient,
+):
     """Проверяет, что роутер /solo-participants объединяет параметры specialization, skills и tags."""
     me = make_user()
     event = make_event()
@@ -93,7 +95,9 @@ async def test_solo_participants_merges_specialization_skills_and_tags(async_cli
     assert set(called_kwargs["tags"]) == {"backend", "Docker", "FastAPI"}
 
 
-async def test_domain_exceptions_map_to_proper_http_status_codes(async_client: AsyncClient):
+async def test_domain_exceptions_map_to_proper_http_status_codes(
+    async_client: AsyncClient,
+):
     """Проверяет, что exception_handlers.py возвращает 404, 403 и 409 для доменных исключений."""
     me = make_user()
     app.dependency_overrides[current_user] = lambda: me

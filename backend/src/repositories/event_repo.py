@@ -79,4 +79,3 @@ class EventRepository(SQLAlchemyRepository):
 
         res = await self.session.execute(stmt)
         return res.scalar_one() or 0
-

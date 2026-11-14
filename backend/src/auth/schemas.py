@@ -74,6 +74,7 @@ class UserPasswordChange(BaseModel):
 
 class UserPublicRead(BaseModel):
     """Публичный профиль участника (без email и telegram_id)."""
+
     id: uuid.UUID
     role: UserRole
     full_name: str

@@ -31,7 +31,9 @@ from utils.exceptions import PermissionDeniedError
         (10, 0, 0),
     ],
 )
-def test_paginated_response_pages_calculation(total: int, size: int, expected_pages: int):
+def test_paginated_response_pages_calculation(
+    total: int, size: int, expected_pages: int
+):
     """Проверяет правильность округления общего числа страниц вверх (math.ceil)."""
     resp = PaginatedResponse.create(
         items=["item1"],
@@ -62,7 +64,10 @@ def test_team_read_transform_orm_computes_existing_roles_and_captain():
     )
     member = make_user(
         full_name="Дизайнер",
-        specializations=["design", "backend"],  # дубликат backend не должен дублироваться в existing_roles
+        specializations=[
+            "design",
+            "backend",
+        ],  # дубликат backend не должен дублироваться в existing_roles
         skills=["Figma"],
     )
 
@@ -101,7 +106,7 @@ def test_team_read_transform_orm_computes_existing_roles_and_captain():
 
 def test_team_create_rejects_arbitrary_needed_roles():
     """Проверяет, что в needed_roles нельзя передать произвольную строку вне ParticipantSpecialization."""
-    with pytest.raises( Exception ):
+    with pytest.raises(Exception):
         TeamCreate(
             name="Hackers",
             max_members=4,

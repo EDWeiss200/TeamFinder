@@ -81,7 +81,9 @@ async def test_change_password_wrong_old_password(fake_uow: FakeUnitOfWork):
     with pytest.raises(InvalidStateError, match="Неверный текущий пароль"):
         await service.change_password(
             user.id,
-            UserPasswordChange(old_password="WrongPass000", new_password="NewPass12345"),
+            UserPasswordChange(
+                old_password="WrongPass000", new_password="NewPass12345"
+            ),
         )
     assert fake_uow.committed is False
 

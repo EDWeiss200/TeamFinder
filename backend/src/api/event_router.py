@@ -49,8 +49,15 @@ async def get_events_catalog(
     ),
     page: int = Query(default=1, ge=1, description="Номер страницы"),
     size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
-    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
-    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
+    limit: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=100,
+        description="Устаревший параметр лимита (совместимость)",
+    ),
+    offset: Optional[int] = Query(
+        default=None, ge=0, description="Устаревший параметр смещения (совместимость)"
+    ),
     service: EventServices = Depends(event_service),
 ):
     """Возвращает пагинированный список публичных мероприятий для главной страницы с фильтрацией."""
@@ -158,8 +165,15 @@ async def get_solo_participants(
     ),
     page: int = Query(default=1, ge=1, description="Номер страницы"),
     size: int = Query(default=20, ge=1, le=100, description="Размер страницы"),
-    limit: Optional[int] = Query(default=None, ge=1, le=100, description="Устаревший параметр лимита (совместимость)"),
-    offset: Optional[int] = Query(default=None, ge=0, description="Устаревший параметр смещения (совместимость)"),
+    limit: Optional[int] = Query(
+        default=None,
+        ge=1,
+        le=100,
+        description="Устаревший параметр лимита (совместимость)",
+    ),
+    offset: Optional[int] = Query(
+        default=None, ge=0, description="Устаревший параметр смещения (совместимость)"
+    ),
     user: User = Depends(current_user),
     service: EventServices = Depends(event_service),
 ):

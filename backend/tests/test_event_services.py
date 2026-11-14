@@ -31,7 +31,9 @@ async def test_lazy_transition_registration_to_team_lock(fake_uow: FakeUnitOfWor
     fake_uow.events.update.assert_awaited_once_with(
         event.id, {"status": EventStatus.TEAM_LOCK}
     )
-    fake_uow.requests.cancel_all_event_pending_requests.assert_awaited_once_with(event.id)
+    fake_uow.requests.cancel_all_event_pending_requests.assert_awaited_once_with(
+        event.id
+    )
     assert fake_uow.committed is True
 
 
@@ -60,10 +62,10 @@ async def test_lazy_transition_submission_to_finished(fake_uow: FakeUnitOfWork):
     "answers, should_pass",
     [
         ({"tshirt": "L", "diet": "Нет"}, True),
-        ({"tshirt": "M"}, True),                    # Поле diet необязательное
-        ({"tshirt": "XXL"}, False),                 # XXL нет в списке options
-        ({}, False),                                # Отсутствует обязательное поле tshirt
-        ({"tshirt": "   "}, False),                 # Пустая строка из пробелов в обязательном поле
+        ({"tshirt": "M"}, True),  # Поле diet необязательное
+        ({"tshirt": "XXL"}, False),  # XXL нет в списке options
+        ({}, False),  # Отсутствует обязательное поле tshirt
+        ({"tshirt": "   "}, False),  # Пустая строка из пробелов в обязательном поле
     ],
 )
 def test_validate_custom_answers(
@@ -106,7 +108,13 @@ async def test_register_for_event_success(fake_uow: FakeUnitOfWork):
     user = make_user()
     event = make_event(
         custom_fields_schema=[
-            {"id": "laptop", "label": "Ноутбук", "type": "select", "options": ["Да", "Нет"], "required": True}
+            {
+                "id": "laptop",
+                "label": "Ноутбук",
+                "type": "select",
+                "options": ["Да", "Нет"],
+                "required": True,
+            }
         ]
     )
     expected_reg = make_registration(user, event, custom_answers={"laptop": "Да"})
@@ -153,7 +161,9 @@ async def test_register_for_event_closed_when_deadline_passed(fake_uow: FakeUnit
     fake_uow.events.find_one_or_none.return_value = event
     service = EventServices(fake_uow)
 
-    with pytest.raises(InvalidStateError, match="Регистрация на это мероприятие закрыта"):
+    with pytest.raises(
+        InvalidStateError, match="Регистрация на это мероприятие закрыта"
+    ):
         await service.register_for_event(
             event_id=event.id,
             user_id=user.id,

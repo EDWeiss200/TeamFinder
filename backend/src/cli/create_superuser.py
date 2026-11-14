@@ -44,7 +44,9 @@ async def create_superuser(
         session.add(new_user)
         await session.commit()
         await session.refresh(new_user)
-        print(f"Супер-администратор успешно создан: ID={new_user.id}, Email={new_user.email}, Роль={new_user.role.value}")
+        print(
+            f"Супер-администратор успешно создан: ID={new_user.id}, Email={new_user.email}, Роль={new_user.role.value}"
+        )
 
 
 def main() -> None:

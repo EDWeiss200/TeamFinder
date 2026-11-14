@@ -20,7 +20,9 @@ router = APIRouter(
     summary="Загрузка изображения (аватарка или баннер)",
 )
 async def upload_image(
-    file: UploadFile = File(..., description="Файл изображения (JPEG, PNG, WebP до 5 МБ)"),
+    file: UploadFile = File(
+        ..., description="Файл изображения (JPEG, PNG, WebP до 5 МБ)"
+    ),
     user: User = Depends(current_user),
     service: UploadServices = Depends(upload_service),
 ):

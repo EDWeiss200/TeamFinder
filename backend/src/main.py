@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 
 from api.event_router import router as event_router
 from api.exception_handlers import register_exception_handlers
+from api.team_router import router as team_router
 from api.upload_router import router as upload_router
 from api.user_router import router as user_router
 from auth.auth import auth_backend, bearer_backend, fastapi_users
@@ -73,6 +74,12 @@ app.include_router(
 # Роутер мероприятий и каталога
 app.include_router(
     event_router,
+    prefix="/api/v1",
+)
+
+# Роутер управления командами
+app.include_router(
+    team_router,
     prefix="/api/v1",
 )
 

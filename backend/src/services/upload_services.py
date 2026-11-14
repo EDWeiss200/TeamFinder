@@ -49,13 +49,20 @@ class UploadServices:
         # 3. Валидация целостности картинки через Pillow
         try:
             import io
+
             image = Image.open(io.BytesIO(contents))
             image.verify()
         except Exception:
-            raise InvalidStateError("Файл поврежден или не является валидным изображением")
+            raise InvalidStateError(
+                "Файл поврежден или не является валидным изображением"
+            )
 
         # 4. Формирование уникального имени файла
-        ext = file.filename.split(".")[-1].lower() if file.filename and "." in file.filename else "webp"
+        ext = (
+            file.filename.split(".")[-1].lower()
+            if file.filename and "." in file.filename
+            else "webp"
+        )
         if ext not in ("jpg", "jpeg", "png", "webp"):
             ext = "webp"
 

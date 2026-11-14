@@ -146,6 +146,29 @@ def make_registration(user: User, event: Event, **overrides: Any) -> EventRegist
     return reg
 
 
+def make_team(event: Event, captain: User, **overrides: Any) -> Team:
+    """Создает объект Team в памяти с капитаном и базовыми полями."""
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "id": uuid.uuid4(),
+        "event_id": event.id,
+        "name": "Drill Flex",
+        "description": "Разрабатываем платформу для подбора команд",
+        "captain_id": captain.id,
+        "max_members": event.max_team_size,
+        "needed_roles": [ParticipantSpecialization.DESIGN.value],
+        "allow_auto_match": True,
+        "invite_token": "secret-invite-token",
+        "created_at": now,
+    }
+    defaults.update(overrides)
+    team = Team(**defaults)
+    team.event = event
+    team.captain = captain
+    team.members = []
+    return team
+
+
 @pytest.fixture
 async def async_client() -> AsyncClient:
     """Асинхронный HTTP-клиент для тестирования роутеров FastAPI."""

@@ -79,7 +79,9 @@ class EventServices:
             value = answers_dict.get(field_id)
 
             # Проверка обязательности поля
-            if is_required and (value is None or (isinstance(value, str) and not value.strip())):
+            if is_required and (
+                value is None or (isinstance(value, str) and not value.strip())
+            ):
                 raise InvalidStateError(
                     f"Обязательное поле анкеты '{field_label}' не заполнено"
                 )

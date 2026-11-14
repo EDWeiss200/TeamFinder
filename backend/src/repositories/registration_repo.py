@@ -81,7 +81,6 @@ class EventRegistrationRepository(SQLAlchemyRepository):
         res = await self.session.execute(stmt)
         return res.scalar_one() or 0
 
-
     async def get_by_event_and_user_for_update(
         self,
         event_id: uuid.UUID,
