@@ -29,6 +29,7 @@ class TeamRepository(SQLAlchemyRepository):
         """Получить команду по ID с жадной предзагрузкой капитана и участников с их профилями."""
         stmt = (
             select(self.model)
+            .execution_options(populate_existing=True)
             .options(
                 joinedload(self.model.captain),
                 selectinload(self.model.members).joinedload(EventRegistration.user),
@@ -38,9 +39,35 @@ class TeamRepository(SQLAlchemyRepository):
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
 
+    def _apply_catalog_filters(
+        self,
+        stmt,
+        needed_role: Optional[str],
+        has_free_slots: Optional[bool],
+    ):
+        """Применить опциональные фильтры каталога команд (роль «Ищем» и свободные места)."""
+        if needed_role is not None:
+            stmt = stmt.where(self.model.needed_roles.any(needed_role))
+
+        if has_free_slots is not None:
+            members_count = (
+                select(func.count(EventRegistration.id))
+                .where(EventRegistration.team_id == self.model.id)
+                .correlate(self.model)
+                .scalar_subquery()
+            )
+            if has_free_slots:
+                stmt = stmt.where(members_count < self.model.max_members)
+            else:
+                stmt = stmt.where(members_count >= self.model.max_members)
+
+        return stmt
+
     async def get_by_event_id(
         self,
         event_id: uuid.UUID,
+        needed_role: Optional[str] = None,
+        has_free_slots: Optional[bool] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> List[Team]:
@@ -52,18 +79,21 @@ class TeamRepository(SQLAlchemyRepository):
                 selectinload(self.model.members).joinedload(EventRegistration.user),
             )
             .where(self.model.event_id == event_id)
-            .order_by(self.model.created_at.asc())
-            .limit(limit)
-            .offset(offset)
         )
+        stmt = self._apply_catalog_filters(stmt, needed_role, has_free_slots)
+        stmt = stmt.order_by(self.model.created_at.asc()).limit(limit).offset(offset)
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
 
-    async def count_by_event(self, event_id: uuid.UUID) -> int:
+    async def count_by_event(
+        self,
+        event_id: uuid.UUID,
+        needed_role: Optional[str] = None,
+        has_free_slots: Optional[bool] = None,
+    ) -> int:
         """Подсчёт команд мероприятия для пагинации."""
-        stmt = select(func.count(self.model.id)).where(
-            self.model.event_id == event_id
-        )
+        stmt = select(func.count(self.model.id)).where(self.model.event_id == event_id)
+        stmt = self._apply_catalog_filters(stmt, needed_role, has_free_slots)
         res = await self.session.execute(stmt)
         return res.scalar_one() or 0
 
@@ -81,9 +111,7 @@ class TeamRepository(SQLAlchemyRepository):
         res = await self.session.execute(stmt)
         return res.scalar_one_or_none()
 
-    async def get_by_invite_token_for_update(
-        self, invite_token: str
-    ) -> Optional[Team]:
+    async def get_by_invite_token_for_update(self, invite_token: str) -> Optional[Team]:
         """Найти команду по секретному токену с пессимистичной блокировкой (SELECT FOR UPDATE)."""
         stmt = (
             select(self.model)
@@ -125,7 +153,9 @@ class TeamRepository(SQLAlchemyRepository):
         """Получить неполные команды хакатона с флагом allow_auto_match=True для умного матчинга."""
         stmt = (
             select(self.model)
-            .options(selectinload(self.model.members).joinedload(EventRegistration.user))
+            .options(
+                selectinload(self.model.members).joinedload(EventRegistration.user)
+            )
             .where(
                 self.model.event_id == event_id,
                 self.model.allow_auto_match.is_(True),

@@ -137,8 +137,780 @@ async def health_check():
 
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=True)
 
+
+=== FILE: backend\tests\conftest.py ===
+# Файл: backend/tests/conftest.py
+"""Глобальные фикстуры, FakeUnitOfWork и фабрики тестовых данных."""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any
+from unittest.mock import AsyncMock
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from main import app
+from models.enums import (
+    EventFormat,
+    EventStatus,
+    ParticipantSpecialization,
+    UserRole,
+)
+from models.event import Event, EventRegistration
+from models.team import Team
+from models.user import User
+from utils.uow import IUnitOfWork
+
+
+class FakeUnitOfWork(IUnitOfWork):
+    """Тестовый двойник UnitOfWork с замоканными репозиториями."""
+
+    def __init__(self) -> None:
+        self.users = AsyncMock()
+        self.events = AsyncMock()
+        self.registrations = AsyncMock()
+        self.teams = AsyncMock()
+        self.requests = AsyncMock()
+        self.submissions = AsyncMock()
+        self.committed = False
+        self.rolled_back = False
+        self.closed = False
+
+    async def __aenter__(self) -> "FakeUnitOfWork":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is not None:
+            await self.rollback()
+        self.closed = True
+
+    async def commit(self) -> None:
+        self.committed = True
+
+    async def rollback(self) -> None:
+        self.rolled_back = True
+
+
+@pytest.fixture
+def fake_uow() -> FakeUnitOfWork:
+    """Фикстура чистого FakeUnitOfWork для каждого теста."""
+    return FakeUnitOfWork()
+
+
+# ------------------------------------------------------------------
+# Фабрики тестовых сущностей
+# ------------------------------------------------------------------
+
+
+def make_user(**overrides: Any) -> User:
+    """Создает объект User в памяти со стандартными полями."""
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "id": uuid.uuid4(),
+        "email": "student@sfu-kras.ru",
+        "hashed_password": "hashed_secret_password",
+        "is_active": True,
+        "is_superuser": False,
+        "is_verified": False,
+        "role": UserRole.PARTICIPANT,
+        "full_name": "Григорий Мухоедов",
+        "nickname": "grisha_dev",
+        "avatar_url": None,
+        "university": "СФУ ИКИТ",
+        "study_group": "КИ25-20Б",
+        "course": 2,
+        "bio": "Backend developer",
+        "skills": ["Python", "FastAPI", "PostgreSQL"],
+        "specializations": [ParticipantSpecialization.BACKEND.value],
+        "vk_url": "https://vk.com/test",
+        "github_url": "https://github.com/test",
+        "telegram_id": None,
+        "telegram_username": "grisha_tg",
+        "telegram_bind_token": None,
+        "telegram_bind_token_expires_at": None,
+        "is_bot_active": False,
+        "created_at": now,
+    }
+    defaults.update(overrides)
+    return User(**defaults)
+
+
+def make_event(**overrides: Any) -> Event:
+    """Создает объект Event в памяти с актуальными дедлайнами в будущем."""
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "id": uuid.uuid4(),
+        "title": "О! Хакатон 2026",
+        "short_description": "Всероссийский хакатон",
+        "description_md": "# Описание кейса",
+        "organizer_name": "СФУ",
+        "organizer_id": uuid.uuid4(),
+        "status": EventStatus.REGISTRATION,
+        "format": EventFormat.HYBRID,
+        "tags": ["Хакатон", "Веб-разработка"],
+        "banner_url": None,
+        "theme_color": "#0044FF",
+        "is_public": True,
+        "is_featured": True,
+        "invite_code": "sfu_hack_2026",
+        "min_team_size": 3,
+        "max_team_size": 5,
+        "registration_start": now - timedelta(days=2),
+        "registration_end": now + timedelta(days=5),
+        "event_start": now + timedelta(days=6),
+        "submission_deadline": now + timedelta(days=8),
+        "event_end": now + timedelta(days=9),
+        "custom_fields_schema": None,
+        "created_at": now,
+    }
+    defaults.update(overrides)
+    return Event(**defaults)
+
+
+def make_registration(user: User, event: Event, **overrides: Any) -> EventRegistration:
+    """Создает объект регистрации участника на мероприятие."""
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "id": uuid.uuid4(),
+        "event_id": event.id,
+        "user_id": user.id,
+        "team_id": None,
+        "custom_answers": None,
+        "joined_team_at": None,
+        "registered_at": now,
+    }
+    defaults.update(overrides)
+    reg = EventRegistration(**defaults)
+    reg.user = user
+    reg.event = event
+    return reg
+
+
+@pytest.fixture
+async def async_client() -> AsyncClient:
+    """Асинхронный HTTP-клиент для тестирования роутеров FastAPI."""
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        yield client
+    # Очищаем переопределения зависимостей после каждого теста
+    app.dependency_overrides.clear()
+
+=== FILE: backend\tests\test_api_routers.py ===
+# Файл: backend/tests/test_api_routers.py
+"""Модульные тесты API-роутеров, безопасности схем и глобальных обработчиков ошибок."""
+
+import uuid
+from unittest.mock import AsyncMock
+
+from httpx import AsyncClient
+
+from api.dependencies import event_service, user_service
+from auth.auth import current_user
+from main import app
+from schemas.common import PaginatedResponse
+from tests.conftest import make_event, make_registration, make_user
+from utils.exceptions import (
+    AlreadyInTeamError,
+    EntityNotFoundError,
+    PermissionDeniedError,
+    TeamIsFullError,
+)
+
+
+async def test_health_check_endpoint(async_client: AsyncClient):
+    """Эндпоинт /health возвращает статус 200 OK."""
+    response = await async_client.get("/health")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+async def test_get_user_by_id_hides_private_fields(async_client: AsyncClient):
+    """SECURITY-ТЕСТ: GET /api/v1/users/{id} НЕ должен возвращать email, telegram_id и is_superuser."""
+    caller = make_user()
+    target_user = make_user(
+        email="secret_private@mail.ru",
+        telegram_id=777888999,
+        is_superuser=True,
+    )
+
+    mock_user_service = AsyncMock()
+    mock_user_service.get_user_by_id.return_value = target_user
+
+    app.dependency_overrides[current_user] = lambda: caller
+    app.dependency_overrides[user_service] = lambda: mock_user_service
+
+    response = await async_client.get(f"/api/v1/users/{target_user.id}")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["full_name"] == target_user.full_name
+    assert "email" not in data
+    assert "telegram_id" not in data
+    assert "hashed_password" not in data
+    assert "is_superuser" not in data
+
+
+async def test_get_me_returns_full_private_profile(async_client: AsyncClient):
+    """GET /api/v1/users/me возвращает полный профиль владельца, включая email и telegram_id."""
+    me = make_user(email="my_own@mail.ru", telegram_id=111222333)
+    mock_user_service = AsyncMock()
+    mock_user_service.get_user_by_id.return_value = me
+
+    app.dependency_overrides[current_user] = lambda: me
+    app.dependency_overrides[user_service] = lambda: mock_user_service
+
+    response = await async_client.get("/api/v1/users/me")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["email"] == "my_own@mail.ru"
+    assert data["telegram_id"] == 111222333
+
+
+async def test_solo_participants_merges_specialization_skills_and_tags(async_client: AsyncClient):
+    """Проверяет, что роутер /solo-participants объединяет параметры specialization, skills и tags."""
+    me = make_user()
+    event = make_event()
+    reg = make_registration(me, event)
+
+    mock_event_service = AsyncMock()
+    mock_event_service.get_solo_participants.return_value = PaginatedResponse.create(
+        items=[reg], total=1, page=1, size=20
+    )
+
+    app.dependency_overrides[current_user] = lambda: me
+    app.dependency_overrides[event_service] = lambda: mock_event_service
+
+    response = await async_client.get(
+        f"/api/v1/events/{event.id}/solo-participants",
+        params={"specialization": "backend", "skills": ["Docker", "FastAPI"]},
+    )
+
+    assert response.status_code == 200
+    called_kwargs = mock_event_service.get_solo_participants.call_args.kwargs
+    assert set(called_kwargs["tags"]) == {"backend", "Docker", "FastAPI"}
+
+
+async def test_domain_exceptions_map_to_proper_http_status_codes(async_client: AsyncClient):
+    """Проверяет, что exception_handlers.py возвращает 404, 403 и 409 для доменных исключений."""
+    me = make_user()
+    app.dependency_overrides[current_user] = lambda: me
+
+    mock_service = AsyncMock()
+    app.dependency_overrides[user_service] = lambda: mock_service
+
+    # 1. EntityNotFoundError -> 404 Not Found
+    mock_service.get_user_by_id.side_effect = EntityNotFoundError("Не найдено")
+    res_404 = await async_client.get(f"/api/v1/users/{uuid.uuid4()}")
+    assert res_404.status_code == 404
+
+    # 2. PermissionDeniedError -> 403 Forbidden
+    mock_service.get_user_by_id.side_effect = PermissionDeniedError("Нет прав")
+    res_403 = await async_client.get(f"/api/v1/users/{uuid.uuid4()}")
+    assert res_403.status_code == 403
+
+    # 3. TeamIsFullError & AlreadyInTeamError -> 409 Conflict
+    mock_service.get_user_by_id.side_effect = TeamIsFullError("Мест нет")
+    res_409_full = await async_client.get(f"/api/v1/users/{uuid.uuid4()}")
+    assert res_409_full.status_code == 409
+
+    mock_service.get_user_by_id.side_effect = AlreadyInTeamError("Уже в команде")
+    res_409_in_team = await async_client.get(f"/api/v1/users/{uuid.uuid4()}")
+    assert res_409_in_team.status_code == 409
+
+=== FILE: backend\tests\test_event_services.py ===
+# Файл: backend/tests/test_event_services.py
+"""Модульные тесты для EventServices (ленивые дедлайны, анкеты, регистрация)."""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from models.enums import EventStatus
+from schemas.event import EventRegistrationCreate
+from services.event_services import EventServices
+from tests.conftest import FakeUnitOfWork, make_event, make_registration, make_user
+from utils.exceptions import EntityNotFoundError, InvalidStateError
+
+
+# ------------------------------------------------------------------
+# Тесты ленивой смены статусов (Lazy Status Transitions)
+# ------------------------------------------------------------------
+
+
+async def test_lazy_transition_registration_to_team_lock(fake_uow: FakeUnitOfWork):
+    """Если registration_end в прошлом, статус переходит в TEAM_LOCK, а висящие заявки отменяются."""
+    past = datetime.now(timezone.utc) - timedelta(hours=1)
+    event = make_event(status=EventStatus.REGISTRATION, registration_end=past)
+    fake_uow.events.get_by_id_or_invite_code.return_value = event
+
+    service = EventServices(fake_uow)
+    res = await service.get_event_detail(identifier=str(event.id))
+
+    assert res["event"].status == EventStatus.TEAM_LOCK
+    fake_uow.events.update.assert_awaited_once_with(
+        event.id, {"status": EventStatus.TEAM_LOCK}
+    )
+    fake_uow.requests.cancel_all_event_pending_requests.assert_awaited_once_with(event.id)
+    assert fake_uow.committed is True
+
+
+async def test_lazy_transition_submission_to_finished(fake_uow: FakeUnitOfWork):
+    """Если submission_deadline в прошлом, статус SUBMISSION автоматически переходит в FINISHED."""
+    past = datetime.now(timezone.utc) - timedelta(minutes=10)
+    event = make_event(status=EventStatus.SUBMISSION, submission_deadline=past)
+    fake_uow.events.get_by_id_or_invite_code.return_value = event
+
+    service = EventServices(fake_uow)
+    res = await service.get_event_detail(identifier=event.invite_code)
+
+    assert res["event"].status == EventStatus.FINISHED
+    fake_uow.events.update.assert_awaited_once_with(
+        event.id, {"status": EventStatus.FINISHED}
+    )
+    assert fake_uow.committed is True
+
+
+# ------------------------------------------------------------------
+# Тесты валидации кастомных полей анкеты (custom_fields_schema)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "answers, should_pass",
+    [
+        ({"tshirt": "L", "diet": "Нет"}, True),
+        ({"tshirt": "M"}, True),                    # Поле diet необязательное
+        ({"tshirt": "XXL"}, False),                 # XXL нет в списке options
+        ({}, False),                                # Отсутствует обязательное поле tshirt
+        ({"tshirt": "   "}, False),                 # Пустая строка из пробелов в обязательном поле
+    ],
+)
+def test_validate_custom_answers(
+    fake_uow: FakeUnitOfWork,
+    answers: dict,
+    should_pass: bool,
+):
+    """Проверяет валидацию обязательных полей и выпадающих списков (select) анкеты хакатона."""
+    schema = [
+        {
+            "id": "tshirt",
+            "label": "Размер футболки",
+            "type": "select",
+            "options": ["S", "M", "L", "XL"],
+            "required": True,
+        },
+        {
+            "id": "diet",
+            "label": "Предпочтения по еде",
+            "type": "text",
+            "required": False,
+        },
+    ]
+    service = EventServices(fake_uow)
+
+    if should_pass:
+        service._validate_custom_answers(schema, answers)
+    else:
+        with pytest.raises(InvalidStateError):
+            service._validate_custom_answers(schema, answers)
+
+
+# ------------------------------------------------------------------
+# Тесты регистрации на мероприятие (register_for_event)
+# ------------------------------------------------------------------
+
+
+async def test_register_for_event_success(fake_uow: FakeUnitOfWork):
+    """Успешная регистрация участника на активное мероприятие."""
+    user = make_user()
+    event = make_event(
+        custom_fields_schema=[
+            {"id": "laptop", "label": "Ноутбук", "type": "select", "options": ["Да", "Нет"], "required": True}
+        ]
+    )
+    expected_reg = make_registration(user, event, custom_answers={"laptop": "Да"})
+
+    fake_uow.events.find_one_or_none.return_value = event
+    fake_uow.registrations.get_by_event_and_user.return_value = None
+    fake_uow.registrations.add_one.return_value = expected_reg
+
+    service = EventServices(fake_uow)
+    reg = await service.register_for_event(
+        event_id=event.id,
+        user_id=user.id,
+        registration_data=EventRegistrationCreate(custom_answers={"laptop": "Да"}),
+    )
+
+    assert reg.user_id == user.id
+    assert fake_uow.committed is True
+
+
+async def test_register_for_event_duplicate_rejected(fake_uow: FakeUnitOfWork):
+    """Повторная регистрация того же участника выбрасывает InvalidStateError."""
+    user = make_user()
+    event = make_event()
+    existing_reg = make_registration(user, event)
+
+    fake_uow.events.find_one_or_none.return_value = event
+    fake_uow.registrations.get_by_event_and_user.return_value = existing_reg
+
+    service = EventServices(fake_uow)
+    with pytest.raises(InvalidStateError, match="уже зарегистрированы"):
+        await service.register_for_event(
+            event_id=event.id,
+            user_id=user.id,
+            registration_data=EventRegistrationCreate(),
+        )
+
+
+async def test_register_for_event_closed_when_deadline_passed(fake_uow: FakeUnitOfWork):
+    """Если дедлайн регистрации истек, событие переводится в TEAM_LOCK и регистрация отклоняется."""
+    user = make_user()
+    past = datetime.now(timezone.utc) - timedelta(minutes=5)
+    event = make_event(status=EventStatus.REGISTRATION, registration_end=past)
+
+    fake_uow.events.find_one_or_none.return_value = event
+    service = EventServices(fake_uow)
+
+    with pytest.raises(InvalidStateError, match="Регистрация на это мероприятие закрыта"):
+        await service.register_for_event(
+            event_id=event.id,
+            user_id=user.id,
+            registration_data=EventRegistrationCreate(),
+        )
+    assert event.status == EventStatus.TEAM_LOCK
+
+
+async def test_get_solo_participants_not_found_event(fake_uow: FakeUnitOfWork):
+    """Запрос каталога одиночек для несуществующего хакатона выбрасывает EntityNotFoundError."""
+    fake_uow.events.find_one_or_none.return_value = None
+    service = EventServices(fake_uow)
+
+    with pytest.raises(EntityNotFoundError):
+        await service.get_solo_participants(event_id=uuid.uuid4())
+
+=== FILE: backend\tests\test_schemas_and_dependencies.py ===
+# Файл: backend/tests/test_schemas_and_dependencies.py
+"""Модульные тесты Pydantic-схем, валидаторов и зависимостей прав доступа."""
+
+import uuid
+from datetime import datetime, timezone
+
+import pytest
+
+from api.dependencies import require_admin, require_organizer
+from models.enums import ParticipantSpecialization, UserRole
+from models.team import Team
+from schemas.common import PaginatedResponse
+from schemas.team import TeamCreate, TeamRead
+from tests.conftest import make_event, make_registration, make_user
+from utils.exceptions import PermissionDeniedError
+
+
+# ------------------------------------------------------------------
+# Тесты пагинации PaginatedResponse
+# ------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "total, size, expected_pages",
+    [
+        (0, 20, 0),
+        (1, 20, 1),
+        (20, 20, 1),
+        (21, 20, 2),
+        (120, 20, 6),
+        (10, 0, 0),
+    ],
+)
+def test_paginated_response_pages_calculation(total: int, size: int, expected_pages: int):
+    """Проверяет правильность округления общего числа страниц вверх (math.ceil)."""
+    resp = PaginatedResponse.create(
+        items=["item1"],
+        total=total,
+        page=1,
+        size=max(size, 1) if size > 0 else 1,
+    )
+    if size == 0:
+        resp_zero = PaginatedResponse.create(items=[], total=total, page=1, size=1)
+        assert resp_zero.pages == total
+    else:
+        assert resp.pages == expected_pages
+        assert resp.total == total
+
+
+# ------------------------------------------------------------------
+# Тесты схемы TeamRead и вычисления existing_roles («Уже есть»)
+# ------------------------------------------------------------------
+
+
+def test_team_read_transform_orm_computes_existing_roles_and_captain():
+    """Проверяет, что в existing_roles попадают только specializations (без skills) и определяется капитан."""
+    event = make_event()
+    captain = make_user(
+        full_name="Капитан",
+        specializations=["backend", "ai_ml"],
+        skills=["Python", "Docker", "PyTorch"],
+    )
+    member = make_user(
+        full_name="Дизайнер",
+        specializations=["design", "backend"],  # дубликат backend не должен дублироваться в existing_roles
+        skills=["Figma"],
+    )
+
+    team = Team(
+        id=uuid.uuid4(),
+        event_id=event.id,
+        name="Drill Flex",
+        description="Топ команда",
+        captain_id=captain.id,
+        max_members=5,
+        needed_roles=["frontend"],
+        allow_auto_match=True,
+        invite_token="secret_token_123",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    reg_captain = make_registration(captain, event, team_id=team.id)
+    reg_member = make_registration(member, event, team_id=team.id)
+    team.members = [reg_captain, reg_member]
+
+    team_dto = TeamRead.model_validate(team)
+
+    assert team_dto.members_count == 2
+    # В existing_roles должны быть только уникальные специализации без произвольных skills
+    assert team_dto.existing_roles == [
+        ParticipantSpecialization.BACKEND,
+        ParticipantSpecialization.AI_ML,
+        ParticipantSpecialization.DESIGN,
+    ]
+    # Проверяем флаг капитана у участников
+    captain_member = next(m for m in team_dto.members if m.user_id == captain.id)
+    regular_member = next(m for m in team_dto.members if m.user_id == member.id)
+    assert captain_member.is_captain is True
+    assert regular_member.is_captain is False
+
+
+def test_team_create_rejects_arbitrary_needed_roles():
+    """Проверяет, что в needed_roles нельзя передать произвольную строку вне ParticipantSpecialization."""
+    with pytest.raises( Exception ):
+        TeamCreate(
+            name="Hackers",
+            max_members=4,
+            needed_roles=["invalid_custom_role"],  # Должно быть отклонено Pydantic
+        )
+
+
+# ------------------------------------------------------------------
+# Тесты прав доступа require_organizer и require_admin
+# ------------------------------------------------------------------
+
+
+async def test_require_organizer_allows_organizer_admin_and_superuser():
+    """Организатор, админ и суперюзер успешно проходят проверку require_organizer."""
+    organizer = make_user(role=UserRole.ORGANIZER)
+    admin = make_user(role=UserRole.ADMIN)
+    superuser = make_user(role=UserRole.PARTICIPANT, is_superuser=True)
+
+    assert await require_organizer(organizer) == organizer
+    assert await require_organizer(admin) == admin
+    assert await require_organizer(superuser) == superuser
+
+
+async def test_require_organizer_blocks_regular_participant():
+    """Обычный студент получает PermissionDeniedError при попытке доступа к панели орга."""
+    student = make_user(role=UserRole.PARTICIPANT, is_superuser=False)
+    with pytest.raises(PermissionDeniedError):
+        await require_organizer(student)
+
+
+async def test_require_admin_blocks_organizer():
+    """Обычный организатор не может выполнять действия супер-администратора."""
+    organizer = make_user(role=UserRole.ORGANIZER, is_superuser=False)
+    with pytest.raises(PermissionDeniedError):
+        await require_admin(organizer)
+
+=== FILE: backend\tests\test_upload_services.py ===
+
+
+=== FILE: backend\tests\test_user_services.py ===
+# Файл: backend/tests/test_user_services.py
+"""Модульные тесты для UserServices."""
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from auth.auth import password_helper
+from auth.schemas import UserPasswordChange, UserUpdate
+from services.user_services import UserServices
+from tests.conftest import FakeUnitOfWork, make_user
+from utils.exceptions import EntityNotFoundError, InvalidStateError
+
+
+async def test_get_user_by_id_success(fake_uow: FakeUnitOfWork):
+    """Успешное получение пользователя по ID."""
+    expected_user = make_user()
+    fake_uow.users.find_one_or_none.return_value = expected_user
+
+    service = UserServices(fake_uow)
+    result = await service.get_user_by_id(expected_user.id)
+
+    assert result == expected_user
+    fake_uow.users.find_one_or_none.assert_awaited_once_with(id=expected_user.id)
+
+
+async def test_get_user_by_id_not_found(fake_uow: FakeUnitOfWork):
+    """Если пользователь не найден, выбрасывается EntityNotFoundError."""
+    fake_uow.users.find_one_or_none.return_value = None
+    service = UserServices(fake_uow)
+
+    with pytest.raises(EntityNotFoundError):
+        await service.get_user_by_id(uuid.uuid4())
+
+
+async def test_update_profile_success(fake_uow: FakeUnitOfWork):
+    """Обновление профиля передает только измененные поля (exclude_unset=True) и делает commit."""
+    user = make_user(nickname="old_nick")
+    updated_user = make_user(id=user.id, nickname="new_nick", course=3)
+    fake_uow.users.find_one_or_none.return_value = user
+    fake_uow.users.update.return_value = updated_user
+
+    service = UserServices(fake_uow)
+    patch_data = UserUpdate(nickname="new_nick", course=3)
+    result = await service.update_profile(user.id, patch_data)
+
+    assert result.nickname == "new_nick"
+    assert fake_uow.committed is True
+    fake_uow.users.update.assert_awaited_once_with(
+        user.id, {"nickname": "new_nick", "course": 3}
+    )
+
+
+async def test_change_password_success(fake_uow: FakeUnitOfWork):
+    """Успешная смена пароля при верном старом пароле."""
+    old_plain = "OldSecret123!"
+    new_plain = "NewSecret456!"
+    user = make_user(hashed_password=password_helper.hash(old_plain))
+    fake_uow.users.find_one_or_none.return_value = user
+
+    service = UserServices(fake_uow)
+    await service.change_password(
+        user.id,
+        UserPasswordChange(old_password=old_plain, new_password=new_plain),
+    )
+
+    assert fake_uow.committed is True
+    fake_uow.users.update.assert_awaited_once()
+    saved_hash = fake_uow.users.update.call_args[0][1]["hashed_password"]
+    verified, _ = password_helper.verify_and_update(new_plain, saved_hash)
+    assert verified is True
+
+
+async def test_change_password_wrong_old_password(fake_uow: FakeUnitOfWork):
+    """Ошибка InvalidStateError, если старый пароль введен неверно."""
+    user = make_user(hashed_password=password_helper.hash("CorrectPass123"))
+    fake_uow.users.find_one_or_none.return_value = user
+
+    service = UserServices(fake_uow)
+    with pytest.raises(InvalidStateError, match="Неверный текущий пароль"):
+        await service.change_password(
+            user.id,
+            UserPasswordChange(old_password="WrongPass000", new_password="NewPass12345"),
+        )
+    assert fake_uow.committed is False
+
+
+async def test_change_password_same_as_old(fake_uow: FakeUnitOfWork):
+    """Ошибка InvalidStateError, если новый пароль совпадает со старым."""
+    same_pass = "SamePassword123"
+    user = make_user(hashed_password=password_helper.hash(same_pass))
+    fake_uow.users.find_one_or_none.return_value = user
+
+    service = UserServices(fake_uow)
+    with pytest.raises(InvalidStateError, match="не должен совпадать"):
+        await service.change_password(
+            user.id,
+            UserPasswordChange(old_password=same_pass, new_password=same_pass),
+        )
+
+
+async def test_generate_telegram_bind_link(fake_uow: FakeUnitOfWork):
+    """Генерация ссылки сохраняет токен с префиксом bind_ и TTL 15 минут."""
+    user = make_user()
+    fake_uow.users.find_one_or_none.return_value = user
+
+    service = UserServices(fake_uow)
+    link = await service.generate_telegram_bind_link(user.id)
+
+    assert "?start=bind_" in link
+    assert fake_uow.committed is True
+    update_payload = fake_uow.users.update.call_args[0][1]
+    assert update_payload["telegram_bind_token"].startswith("bind_")
+    assert update_payload["telegram_bind_token_expires_at"] > datetime.now(timezone.utc)
+
+
+async def test_bind_telegram_success(fake_uow: FakeUnitOfWork):
+    """Успешная привязка Telegram по валидному токену и сброс одноразового токена."""
+    now = datetime.now(timezone.utc)
+    user = make_user(
+        telegram_bind_token="bind_valid123",
+        telegram_bind_token_expires_at=now + timedelta(minutes=10),
+    )
+    # 1-й вызов find_one_or_none — поиск по токену, 2-й — проверка занятости telegram_id
+    fake_uow.users.find_one_or_none.side_effect = [user, None]
+    fake_uow.users.update.return_value = user
+
+    service = UserServices(fake_uow)
+    await service.bind_telegram(
+        token="bind_valid123",
+        telegram_id=999888777,
+        telegram_username="grisha_new",
+    )
+
+    assert fake_uow.committed is True
+    update_payload = fake_uow.users.update.call_args[0][1]
+    assert update_payload["telegram_id"] == 999888777
+    assert update_payload["is_bot_active"] is True
+    assert update_payload["telegram_bind_token"] is None
+    assert update_payload["telegram_bind_token_expires_at"] is None
+
+
+async def test_bind_telegram_expired_token(fake_uow: FakeUnitOfWork):
+    """Если прошло больше 15 минут, привязка отклоняется с InvalidStateError."""
+    expired_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+    user = make_user(
+        telegram_bind_token="bind_expired",
+        telegram_bind_token_expires_at=expired_time,
+    )
+    fake_uow.users.find_one_or_none.return_value = user
+
+    service = UserServices(fake_uow)
+    with pytest.raises(InvalidStateError, match="Срок действия токена"):
+        await service.bind_telegram("bind_expired", 12345, "user")
+
+    assert fake_uow.committed is False
+
+
+async def test_bind_telegram_already_linked_to_another_user(fake_uow: FakeUnitOfWork):
+    """Запрет привязки одного Telegram-аккаунта к двум разным профилям."""
+    now = datetime.now(timezone.utc)
+    user1 = make_user(
+        telegram_bind_token="bind_tok",
+        telegram_bind_token_expires_at=now + timedelta(minutes=10),
+    )
+    user2 = make_user(telegram_id=555555)
+    fake_uow.users.find_one_or_none.side_effect = [user1, user2]
+
+    service = UserServices(fake_uow)
+    with pytest.raises(InvalidStateError, match="уже привязан к другому профилю"):
+        await service.bind_telegram("bind_tok", 555555, "user")
 
 === FILE: backend\src\api\dependencies.py ===
 """Фабрики зависимостей и проверки прав доступа."""
@@ -148,6 +920,7 @@ from auth.auth import current_user
 from models.enums import UserRole
 from models.user import User
 from services.event_services import EventServices
+from services.team_services import TeamServices
 from services.upload_services import UploadServices
 from services.user_services import UserServices
 from utils.exceptions import PermissionDeniedError
@@ -167,6 +940,11 @@ def user_service(uow: IUnitOfWork = Depends(get_uow)) -> UserServices:
 def event_service(uow: IUnitOfWork = Depends(get_uow)) -> EventServices:
     """Провайдер сервиса мероприятий с инъекцией Unit of Work."""
     return EventServices(uow)
+
+
+def team_service(uow: IUnitOfWork = Depends(get_uow)) -> TeamServices:
+    """Провайдер сервиса команд с инъекцией Unit of Work."""
+    return TeamServices(uow)
 
 
 def upload_service() -> UploadServices:
@@ -3050,6 +3828,291 @@ class EventServices:
             )
 
 
+=== FILE: backend\src\services\team_services.py ===
+"""Сервисный слой для работы с командами, инвайтами и составом."""
+
+import secrets
+import uuid
+from datetime import datetime, timezone
+from typing import Optional
+
+from models.enums import EventStatus
+from models.team import Team
+from services.event_services import EventServices
+from schemas.team import TeamCreate
+from utils.exceptions import (
+    AlreadyInTeamError,
+    EntityNotFoundError,
+    InvalidStateError,
+    PermissionDeniedError,
+    TeamIsFullError,
+)
+from utils.uow import IUnitOfWork
+
+
+class TeamServices:
+    """Сервис управления командами и жизненным циклом состава."""
+
+    def __init__(self, uow: IUnitOfWork) -> None:
+        self.uow = uow
+
+    def _ensure_registration_phase(self, event) -> None:
+        """Проверить, что операция выполняется в фазе регистрации."""
+        now = datetime.now(timezone.utc)
+        if event.status != EventStatus.REGISTRATION or now > event.registration_end:
+            raise InvalidStateError(
+                "Операция доступна только во время фазы регистрации мероприятия"
+            )
+
+    async def _sync_event_state(self, event) -> None:
+        """Применить ленивые переходы статуса мероприятия перед командной операцией."""
+        await EventServices(self.uow)._apply_lazy_status_transitions(event)
+
+    async def _generate_unique_invite_token(self) -> str:
+        """Сгенерировать уникальный секретный токен приглашения."""
+        while True:
+            token = secrets.token_hex(32)
+            existing = await self.uow.teams.find_one_or_none(invite_token=token)
+            if not existing:
+                return token
+
+    @staticmethod
+    def _close_one_needed_role(needed_roles: list[str], user_specializations: list[str]) -> None:
+        """Удалить не более одной закрываемой роли из needed_roles."""
+        for specialization in user_specializations:
+            if specialization in needed_roles:
+                needed_roles.remove(specialization)
+                break
+
+    async def create_team(
+        self,
+        event_id: uuid.UUID,
+        creator_id: uuid.UUID,
+        team_data: TeamCreate,
+    ) -> Team:
+        """Создать команду и автоматически зачислить создателя как капитана."""
+        async with self.uow:
+            event = await self.uow.events.find_one_or_none(id=event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {event_id} не найдено")
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event_id=event_id,
+                user_id=creator_id,
+            )
+            if not registration:
+                raise InvalidStateError(
+                    "Чтобы создать команду, нужно сначала зарегистрироваться на мероприятие"
+                )
+            if registration.team_id is not None:
+                raise AlreadyInTeamError()
+
+            if team_data.max_members > event.max_team_size:
+                raise InvalidStateError(
+                    "Желаемый размер команды не может превышать лимит мероприятия"
+                )
+
+            invite_token = await self._generate_unique_invite_token()
+            team_payload = team_data.model_dump(mode="json")
+            team_payload.update(
+                {
+                    "event_id": event_id,
+                    "captain_id": creator_id,
+                    "invite_token": invite_token,
+                }
+            )
+            team = await self.uow.teams.add_one(team_payload)
+
+            now = datetime.now(timezone.utc)
+            await self.uow.registrations.update(
+                registration.id,
+                {
+                    "team_id": team.id,
+                    "joined_team_at": now,
+                },
+            )
+            await self.uow.requests.cancel_other_user_requests(event_id, creator_id)
+            await self.uow.commit()
+
+            return await self.uow.teams.get_by_id_with_members(team.id)
+
+    async def join_by_invite_token(
+        self,
+        invite_token: str,
+        user_id: uuid.UUID,
+    ) -> Team:
+        """Вступить в команду по секретному invite_token."""
+        async with self.uow:
+            team = await self.uow.teams.get_by_invite_token_for_update(invite_token)
+            if not team:
+                raise EntityNotFoundError("Команда по указанному invite_token не найдена")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {team.event_id} не найдено")
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event_id=event.id,
+                user_id=user_id,
+            )
+            if registration and registration.team_id is not None:
+                raise AlreadyInTeamError()
+
+            current_members_count = await self.uow.teams.get_members_count(team.id)
+            limit = min(team.max_members, event.max_team_size)
+            if current_members_count >= limit:
+                raise TeamIsFullError()
+
+            now = datetime.now(timezone.utc)
+            if registration is None:
+                registration = await self.uow.registrations.add_one(
+                    {
+                        "event_id": event.id,
+                        "user_id": user_id,
+                        "team_id": team.id,
+                        "joined_team_at": now,
+                    }
+                )
+            else:
+                await self.uow.registrations.update(
+                    registration.id,
+                    {
+                        "team_id": team.id,
+                        "joined_team_at": now,
+                    },
+                )
+
+            needed_roles = list(team.needed_roles or [])
+            self._close_one_needed_role(needed_roles, list(user.specializations or []))
+            await self.uow.teams.update(team.id, {"needed_roles": needed_roles})
+
+            await self.uow.requests.cancel_other_user_requests(event.id, user_id)
+
+            if current_members_count + 1 >= limit:
+                await self.uow.requests.cancel_team_pending_requests(team.id)
+
+            await self.uow.commit()
+            return await self.uow.teams.get_by_id_with_members(team.id)
+
+    async def leave_team(self, team_id: uuid.UUID, user_id: uuid.UUID) -> Optional[Team]:
+        """Выйти из команды с автопередачей капитанства или удалением пустой команды."""
+        async with self.uow:
+            team = await self.uow.teams.get_by_id_for_update(team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {team_id} не найдена")
+
+            registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event_id=team.event_id,
+                user_id=user_id,
+            )
+            if not registration or registration.team_id is None:
+                raise InvalidStateError("Вы не состоите в этой команде")
+            if registration.team_id != team.id:
+                raise InvalidStateError("Вы не состоите в этой команде")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {team.event_id} не найдено")
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            team_with_members = await self.uow.teams.get_by_id_with_members(team.id)
+            if not team_with_members:
+                raise EntityNotFoundError(f"Команда с ID {team.id} не найдена")
+
+            remaining_members = [
+                member for member in team_with_members.members if member.user_id != user_id
+            ]
+
+            await self.uow.registrations.update(
+                registration.id,
+                {
+                    "team_id": None,
+                    "joined_team_at": None,
+                },
+            )
+
+            if team.captain_id == user_id:
+                if not remaining_members:
+                    await self.uow.requests.cancel_team_pending_requests(team.id)
+                    await self.uow.teams.delete_one(team.id)
+                    await self.uow.commit()
+                    return None
+
+                new_captain = min(
+                    remaining_members,
+                    key=lambda member: member.joined_team_at
+                    or datetime.max.replace(tzinfo=timezone.utc),
+                )
+                await self.uow.teams.update(team.id, {"captain_id": new_captain.user_id})
+
+            await self.uow.commit()
+            return await self.uow.teams.get_by_id_with_members(team.id)
+
+    async def kick_member(
+        self,
+        team_id: uuid.UUID,
+        actor_user_id: uuid.UUID,
+        member_user_id: uuid.UUID,
+    ) -> Optional[Team]:
+        """Исключить участника из команды капитаном."""
+        async with self.uow:
+            team = await self.uow.teams.get_by_id_for_update(team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {team_id} не найдена")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {team.event_id} не найдено")
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            if team.captain_id != actor_user_id:
+                raise PermissionDeniedError("Только капитан команды может исключать участников")
+            if member_user_id == actor_user_id:
+                raise InvalidStateError("Капитан не может исключить сам себя")
+
+            target_registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event_id=event.id,
+                user_id=member_user_id,
+            )
+            if not target_registration or target_registration.team_id != team.id:
+                raise InvalidStateError("Пользователь не состоит в этой команде")
+
+            team_with_members = await self.uow.teams.get_by_id_with_members(team.id)
+            if not team_with_members:
+                raise EntityNotFoundError(f"Команда с ID {team.id} не найдена")
+
+            remaining_members = [
+                member for member in team_with_members.members if member.user_id != member_user_id
+            ]
+
+            await self.uow.registrations.update(
+                target_registration.id,
+                {
+                    "team_id": None,
+                    "joined_team_at": None,
+                },
+            )
+
+            if not remaining_members:
+                await self.uow.requests.cancel_team_pending_requests(team.id)
+                await self.uow.teams.delete_one(team.id)
+                await self.uow.commit()
+                return None
+
+            await self.uow.commit()
+            return await self.uow.teams.get_by_id_with_members(team.id)
+
+
 === FILE: backend\src\services\upload_services.py ===
 """Сервис для валидации и сохранения загружаемых медиа-файлов."""
 
@@ -3260,12 +4323,14 @@ class UserServices:
 """Сервисы бизнес-логики приложения."""
 
 from services.event_services import EventServices
+from services.team_services import TeamServices
 from services.upload_services import UploadServices
 from services.user_services import UserServices
 
 __all__ = [
     "UserServices",
     "EventServices",
+    "TeamServices",
     "UploadServices",
 ]
 
