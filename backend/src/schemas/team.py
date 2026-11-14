@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from models.enums import ParticipantSpecialization
 
@@ -64,6 +64,14 @@ class TeamBase(BaseModel):
         description="Разрешить добавление свободных участников алгоритмом автораспределения",
     )
 
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Название команды должно содержать минимум 2 символа")
+        return v
+
 
 class TeamCreate(TeamBase):
     """Схема создания новой команды внутри хакатона."""
@@ -109,6 +117,16 @@ class TeamUpdate(BaseModel):
         default=None,
         description="Обновленный флаг разрешения автораспределения",
     )
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if len(v) < 2:
+            raise ValueError("Название команды должно содержать минимум 2 символа")
+        return v
 
 
 # =====================================================================
@@ -188,7 +206,7 @@ class TeamRead(BaseModel):
                 "members": members_list,
                 "allow_auto_match": data.allow_auto_match,
                 "created_at": data.created_at,
-                "invite_token": getattr(data, "invite_token", None),
+                "invite_token": None,
             }
 
         return data

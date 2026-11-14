@@ -11,6 +11,7 @@ from utils.exceptions import (
     IncompleteTeamError,
     InvalidStateError,
     PermissionDeniedError,
+    UnprocessableEntityError,
     TeamIsFullError,
 )
 
@@ -64,6 +65,15 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def invalid_state_handler(request: Request, exc: InvalidStateError):
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": exc.message},
+        )
+
+    @app.exception_handler(UnprocessableEntityError)
+    async def unprocessable_entity_handler(
+        request: Request, exc: UnprocessableEntityError
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             content={"detail": exc.message},
         )
 

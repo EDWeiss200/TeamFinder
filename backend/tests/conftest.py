@@ -32,6 +32,7 @@ class FakeUnitOfWork(IUnitOfWork):
         self.teams = AsyncMock()
         self.requests = AsyncMock()
         self.submissions = AsyncMock()
+        self.teams.find_one_or_none.return_value = None
         self.committed = False
         self.rolled_back = False
         self.closed = False

@@ -51,6 +51,13 @@ class InvalidStateError(DomainError):
         super().__init__(message)
 
 
+class UnprocessableEntityError(InvalidStateError):
+    """Доменная ошибка валидации входных данных, соответствующая HTTP 422."""
+
+    def __init__(self, message: str = "Невозможно обработать переданные данные"):
+        super().__init__(message)
+
+
 class IncompleteTeamError(DomainError):
     """Команда не набрала минимально необходимое количество участников."""
 

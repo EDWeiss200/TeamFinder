@@ -8,6 +8,7 @@ from typing import Optional
 from auth.auth import password_helper
 from auth.schemas import UserPasswordChange, UserUpdate
 from config import BOT_USERNAME
+from models.enums import UserRole
 from models.user import User
 from utils.exceptions import EntityNotFoundError, InvalidStateError
 from utils.uow import IUnitOfWork
@@ -35,6 +36,8 @@ class UserServices:
                 raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
 
             update_data = user_data.model_dump(exclude_unset=True)
+            if user.role == UserRole.ORGANIZER:
+                update_data["specializations"] = []
             updated_user = await self.uow.users.update(user_id, update_data)
             await self.uow.commit()
             return updated_user

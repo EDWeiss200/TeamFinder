@@ -245,6 +245,7 @@ async def test_regenerate_invite_token_success(fake_uow: FakeUnitOfWork):
     team = make_team(event, captain)
 
     fake_uow.teams.get_by_id_for_update.return_value = team
+    fake_uow.events.find_one_or_none.return_value = event
     fake_uow.teams.find_one_or_none.return_value = None
 
     service = TeamServices(fake_uow)
@@ -266,6 +267,7 @@ async def test_regenerate_invite_token_rejects_non_captain(fake_uow: FakeUnitOfW
     team = make_team(event, captain)
 
     fake_uow.teams.get_by_id_for_update.return_value = team
+    fake_uow.events.find_one_or_none.return_value = event
 
     service = TeamServices(fake_uow)
 

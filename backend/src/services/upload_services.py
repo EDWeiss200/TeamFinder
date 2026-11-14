@@ -1,5 +1,6 @@
 """Сервис для валидации и сохранения загружаемых медиа-файлов."""
 
+import io
 import hashlib
 import secrets
 from pathlib import Path
@@ -48,8 +49,6 @@ class UploadServices:
 
         # 3. Валидация целостности картинки через Pillow
         try:
-            import io
-
             image = Image.open(io.BytesIO(contents))
             image.verify()
         except Exception:
@@ -57,21 +56,20 @@ class UploadServices:
                 "Файл поврежден или не является валидным изображением"
             )
 
-        # 4. Формирование уникального имени файла
-        ext = (
-            file.filename.split(".")[-1].lower()
-            if file.filename and "." in file.filename
-            else "webp"
-        )
-        if ext not in ("jpg", "jpeg", "png", "webp"):
-            ext = "webp"
+        # 4. Конвертация в WebP и формирование уникального имени файла
+        with Image.open(io.BytesIO(contents)) as image:
+            if image.mode not in ("RGB", "RGBA"):
+                image = image.convert("RGBA")
+            output = io.BytesIO()
+            image.save(output, format="WEBP")
+            webp_contents = output.getvalue()
 
-        file_hash = hashlib.sha256(contents).hexdigest()[:16]
-        unique_name = f"{file_hash}_{secrets.token_hex(4)}.{ext}"
+        file_hash = hashlib.sha256(webp_contents).hexdigest()[:16]
+        unique_name = f"{file_hash}_{secrets.token_hex(4)}.webp"
         destination_path = self.upload_dir / unique_name
 
         # 5. Запись на диск
         with open(destination_path, "wb") as f:
-            f.write(contents)
+            f.write(webp_contents)
 
         return f"/static/uploads/{unique_name}"

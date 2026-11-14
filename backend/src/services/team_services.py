@@ -5,6 +5,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from fastapi import HTTPException, status
 from models.enums import EventStatus
 from models.team import Team
 from models.user import User
@@ -34,18 +35,21 @@ class TeamServices:
             raise InvalidStateError(
                 "Операция доступна только во время фазы регистрации мероприятия"
             )
-
+        
+    
+    
     async def _sync_event_state(self, event) -> None:
         """Применить ленивые переходы статуса мероприятия перед командной операцией."""
         await EventServices(self.uow)._apply_lazy_status_transitions(event)
 
     async def _generate_unique_invite_token(self) -> str:
-        """Сгенерировать уникальный секретный токен приглашения."""
-        while True:
+        """Сгенерировать уникальный секретный токен приглашения (максимум 10 попыток)."""
+        for _ in range(10):
             token = secrets.token_hex(32)
             existing = await self.uow.teams.find_one_or_none(invite_token=token)
-            if not existing:
+            if existing is None or not isinstance(existing, Team):
                 return token
+        raise InvalidStateError("Не удалось сгенерировать уникальный токен приглашения")
 
     @staticmethod
     def _close_one_needed_role(
@@ -139,6 +143,10 @@ class TeamServices:
             if team_data.max_members > event.max_team_size:
                 raise InvalidStateError(
                     "Желаемый размер команды не может превышать лимит мероприятия"
+                )
+            if len(team_data.needed_roles) > team_data.max_members - 1:
+                raise InvalidStateError(
+                    "Количество искомых ролей превышает число свободных мест в команде"
                 )
 
             invite_token = await self._generate_unique_invite_token()
@@ -289,17 +297,23 @@ class TeamServices:
         team_id: uuid.UUID,
         actor_user_id: uuid.UUID,
     ) -> str:
-        """Перевыпустить invite_token команды. Разрешено только капитану."""
+        """Перевыпустить invite_token команды. Разрешено только капитану в фазе регистрации."""
         async with self.uow:
             team = await self.uow.teams.get_by_id_for_update(team_id)
             if not team:
                 raise EntityNotFoundError(f"Команда с ID {team_id} не найдена")
 
+            # Проверяем статус мероприятия и ленивые дедлайны:
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {team.event_id} не найдено")
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
             if team.captain_id != actor_user_id:
                 raise PermissionDeniedError(
                     "Только капитан команды может перевыпускать invite_token"
                 )
-            
 
             token = await self._generate_unique_invite_token()
             await self.uow.teams.update(team_id, {"invite_token": token})
@@ -325,7 +339,11 @@ class TeamServices:
                     f"Мероприятие с ID {team.event_id} не найдено"
                 )
             await self._sync_event_state(event)
-            self._ensure_registration_phase(event)
+            if event.status != EventStatus.REGISTRATION or datetime.now(timezone.utc) > event.registration_end:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Регистрация на это мероприятие закрыта",
+                )
 
             user = await self.uow.users.find_one_or_none(id=user_id)
             if not user:

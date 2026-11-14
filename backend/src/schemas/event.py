@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models.enums import EventFormat, EventStatus, ParticipantSpecialization
 
@@ -135,6 +135,16 @@ class EventBase(BaseModel):
         default=None,
         description="Схема дополнительных вопросов анкеты под конкретный хакатон",
     )
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if self.min_team_size > self.max_team_size:
+            raise ValueError("Минимальный размер команды не может быть больше максимального")
+        if self.registration_end < self.registration_start:
+            raise ValueError("Дедлайн регистрации не может быть раньше даты начала регистрации")
+        if self.event_end < self.event_start:
+            raise ValueError("Окончание мероприятия не может быть раньше его начала")
+        return self
 
 
 class EventCreate(EventBase):

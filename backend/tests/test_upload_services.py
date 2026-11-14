@@ -39,7 +39,7 @@ async def test_save_image_valid_png(tmp_path: Path):
     url = await service.save_image(upload)
 
     assert url.startswith("/static/uploads/")
-    assert url.endswith(".png")
+    assert url.endswith(".webp")
     saved_filename = url.split("/")[-1]
     assert (tmp_path / saved_filename).exists()
 

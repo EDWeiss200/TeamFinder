@@ -11,6 +11,7 @@ from schemas.event import EventRegistrationCreate
 from utils.exceptions import (
     EntityNotFoundError,
     InvalidStateError,
+    UnprocessableEntityError,
 )
 from utils.uow import IUnitOfWork
 
@@ -82,14 +83,14 @@ class EventServices:
             if is_required and (
                 value is None or (isinstance(value, str) and not value.strip())
             ):
-                raise InvalidStateError(
+                raise UnprocessableEntityError(
                     f"Обязательное поле анкеты '{field_label}' не заполнено"
                 )
 
             # Проверка допустимых опций для select
             if value is not None and field_type == "select" and options:
                 if value not in options:
-                    raise InvalidStateError(
+                    raise UnprocessableEntityError(
                         f"Недопустимое значение для поля '{field_label}'. "
                         f"Допустимые варианты: {', '.join(map(str, options))}"
                     )
@@ -118,6 +119,9 @@ class EventServices:
             for ev in events:
                 await self._apply_lazy_status_transitions(ev)
 
+            if status is not None:
+                events = [ev for ev in events if ev.status == status]
+
             total = await self.uow.events.count_public_events(
                 is_featured=is_featured,
                 status=status,
@@ -142,6 +146,9 @@ class EventServices:
         async with self.uow:
             event = await self.uow.events.get_by_id_or_invite_code(identifier)
             if not event:
+                raise EntityNotFoundError(f"Мероприятие '{identifier}' не найдено")
+
+            if event.status == EventStatus.DRAFT and current_user_id != event.organizer_id:
                 raise EntityNotFoundError(f"Мероприятие '{identifier}' не найдено")
 
             await self._apply_lazy_status_transitions(event)
