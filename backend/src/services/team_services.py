@@ -5,18 +5,24 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import HTTPException, status
-from models.enums import EventStatus
-from models.team import Team
+from models.enums import EventStatus, TeamRequestStatus, TeamRequestType
+from models.team import Team, TeamRequest
 from models.user import User
 from schemas.common import PaginatedResponse
 from services.event_services import EventServices
-from schemas.team import TeamCreate, TeamDetailRead, TeamUpdate
+from schemas.team import (
+    TeamApplicationCreate,
+    TeamCreate,
+    TeamDetailRead,
+    TeamInviteCreate,
+    TeamUpdate,
+)
 from utils.exceptions import (
     AlreadyInTeamError,
     EntityNotFoundError,
     InvalidStateError,
     PermissionDeniedError,
+    RegistrationClosedError,
     TeamIsFullError,
 )
 from utils.uow import IUnitOfWork
@@ -32,12 +38,11 @@ class TeamServices:
         """Проверить, что операция выполняется в фазе регистрации."""
         now = datetime.now(timezone.utc)
         if event.status != EventStatus.REGISTRATION or now > event.registration_end:
-            raise InvalidStateError(
-                "Операция доступна только во время фазы регистрации мероприятия"
+            raise RegistrationClosedError(
+                "Регистрация на это мероприятие закрыта "
+                f"(текущий статус: {event.status.value})"
             )
         
-    
-    
     async def _sync_event_state(self, event) -> None:
         """Применить ленивые переходы статуса мероприятия перед командной операцией."""
         await EventServices(self.uow)._apply_lazy_status_transitions(event)
@@ -53,9 +58,14 @@ class TeamServices:
 
     @staticmethod
     def _close_one_needed_role(
-        needed_roles: list[str], user_specializations: list[str]
+        needed_roles: list[str],
+        user_specializations: list[str],
+        target_role: Optional[str] = None,
     ) -> None:
         """Удалить не более одной закрываемой роли из needed_roles."""
+        if target_role is not None and target_role in needed_roles:
+            needed_roles.remove(target_role)
+            return
         for specialization in user_specializations:
             if specialization in needed_roles:
                 needed_roles.remove(specialization)
@@ -212,6 +222,409 @@ class TeamServices:
                 size=size,
             )
 
+    async def get_my_requests(
+        self,
+        event_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> list[TeamRequest]:
+        """Получить мои заявки или входящие заявки моей команды."""
+        async with self.uow:
+            event = await self.uow.events.find_one_or_none(id=event_id)
+            if not event:
+                raise EntityNotFoundError(f"Мероприятие с ID {event_id} не найдено")
+
+            await self._sync_event_state(event)
+
+            reg = await self.uow.registrations.get_by_event_and_user(event_id, user_id)
+            if reg and reg.team_id and reg.team and reg.team.captain_id == user_id:
+                return await self.uow.requests.get_team_incoming_requests(reg.team_id)
+            return await self.uow.requests.get_user_event_requests(event_id, user_id)
+
+    async def apply_to_team(
+        self,
+        team_id: uuid.UUID,
+        user_id: uuid.UUID,
+        data: Optional[TeamApplicationCreate] = None,
+    ) -> TeamRequest:
+        """Подать отклик в команду или автоматически принять ожидающее приглашение."""
+        async with self.uow:
+            team = await self.uow.teams.get_by_id_for_update(team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {team_id} не найдена")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(
+                    f"Мероприятие с ID {team.event_id} не найдено"
+                )
+
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event.id, user_id
+            )
+            if not registration:
+                raise InvalidStateError(
+                    "Чтобы откликнуться на команду, нужно зарегистрироваться на мероприятие"
+                )
+            if registration.team_id is not None:
+                raise AlreadyInTeamError()
+
+            current_members_count = await self.uow.teams.get_members_count(team.id)
+            limit = min(team.max_members, event.max_team_size)
+            if current_members_count >= limit:
+                raise TeamIsFullError()
+
+            existing = await self.uow.requests.get_active_request(team.id, user_id)
+            if existing:
+                if existing.status == TeamRequestStatus.PENDING_CAPTAIN:
+                    raise InvalidStateError(
+                        "Активный отклик в эту команду уже существует"
+                    )
+                if existing.status == TeamRequestStatus.PENDING_USER:
+                    now = datetime.now(timezone.utc)
+                    registration.team_id = team.id
+                    registration.joined_team_at = now
+                    await self.uow.registrations.update(
+                        registration.id,
+                        {"team_id": team.id, "joined_team_at": now},
+                    )
+
+                    target_role = existing.target_role or (
+                        getattr(data.target_role, "value", data.target_role)
+                        if data and data.target_role is not None
+                        else None
+                    )
+
+                    update_req_payload = {"status": TeamRequestStatus.ACCEPTED}
+                    if target_role is not None:
+                        update_req_payload["target_role"] = target_role
+                    if data and data.message is not None:
+                        update_req_payload["message"] = data.message
+                    await self.uow.requests.update(existing.id, update_req_payload)
+
+                    needed_roles = list(team.needed_roles or [])
+                    self._close_one_needed_role(
+                        needed_roles,
+                        list(getattr(user, "specializations", []) or []),
+                        target_role=target_role,
+                    )
+                    team.needed_roles = needed_roles
+                    await self.uow.teams.update(team.id, {"needed_roles": needed_roles})
+
+                    existing.status = TeamRequestStatus.ACCEPTED
+                    await self.uow.requests.cancel_other_user_requests(
+                        event.id,
+                        user_id,
+                        exclude_request_id=existing.id,
+                    )
+                    if current_members_count + 1 >= limit:
+                        await self.uow.requests.cancel_team_pending_requests(
+                            team.id,
+                            exclude_request_id=existing.id,
+                        )
+                    await self.uow.commit()
+                    return await self.uow.requests.get_by_id_with_relations(existing.id)
+
+            request_payload = {
+                "event_id": event.id,
+                "team_id": team.id,
+                "user_id": user_id,
+                "target_role": getattr(data.target_role, "value", data.target_role)
+                if data and data.target_role is not None
+                else None,
+                "message": data.message if data else None,
+                "request_type": TeamRequestType.APPLICATION,
+                "status": TeamRequestStatus.PENDING_CAPTAIN,
+            }
+            request = await self.uow.requests.add_one(request_payload)
+            await self.uow.commit()
+            return await self.uow.requests.get_by_id_with_relations(request.id)
+
+    async def invite_user_to_team(
+        self,
+        team_id: uuid.UUID,
+        captain_id: uuid.UUID,
+        target_user_id: uuid.UUID,
+        data: Optional[TeamInviteCreate] = None,
+    ) -> TeamRequest:
+        """Отправить приглашение участнику или превратить встречный отклик в приглашение."""
+        async with self.uow:
+            team = await self.uow.teams.get_by_id_for_update(team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {team_id} не найдена")
+            if team.captain_id != captain_id:
+                raise PermissionDeniedError(
+                    "Отправлять приглашения может только капитан команды"
+                )
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(
+                    f"Мероприятие с ID {team.event_id} не найдено"
+                )
+
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            target_user = await self.uow.users.find_one_or_none(id=target_user_id)
+            if not target_user:
+                raise EntityNotFoundError(f"Пользователь с ID {target_user_id} не найден")
+
+            registration = await self.uow.registrations.get_by_event_and_user_for_update(
+                event.id, target_user_id
+            )
+            if not registration:
+                raise InvalidStateError(
+                    "Пользователь не зарегистрирован на мероприятие"
+                )
+            if registration.team_id is not None:
+                raise AlreadyInTeamError()
+
+            current_members_count = await self.uow.teams.get_members_count(team.id)
+            limit = min(team.max_members, event.max_team_size)
+            if current_members_count >= limit:
+                raise TeamIsFullError()
+
+            existing = await self.uow.requests.get_active_request(team.id, target_user_id)
+            if existing:
+                if existing.status == TeamRequestStatus.PENDING_USER:
+                    raise InvalidStateError(
+                        "Приглашение этому участнику уже отправлено"
+                    )
+                if existing.status == TeamRequestStatus.PENDING_CAPTAIN:
+                    update_payload = {"status": TeamRequestStatus.PENDING_USER}
+                    if data and data.message is not None:
+                        update_payload["message"] = data.message
+                    if data and data.target_role is not None:
+                        update_payload["target_role"] = getattr(
+                            data.target_role, "value", data.target_role
+                        )
+                    await self.uow.requests.update(existing.id, update_payload)
+                    existing.status = TeamRequestStatus.PENDING_USER
+                    if "message" in update_payload:
+                        existing.message = update_payload["message"]
+                    if "target_role" in update_payload:
+                        existing.target_role = update_payload["target_role"]
+                    await self.uow.commit()
+                    return await self.uow.requests.get_by_id_with_relations(existing.id)
+
+            request_payload = {
+                "event_id": event.id,
+                "team_id": team.id,
+                "user_id": target_user_id,
+                "target_role": getattr(data.target_role, "value", data.target_role)
+                if data and data.target_role is not None
+                else None,
+                "message": data.message if data else None,
+                "request_type": TeamRequestType.INVITE,
+                "status": TeamRequestStatus.PENDING_USER,
+            }
+            request = await self.uow.requests.add_one(request_payload)
+            await self.uow.commit()
+            return await self.uow.requests.get_by_id_with_relations(request.id)
+
+    async def captain_approve_request(
+        self,
+        request_id: uuid.UUID,
+        captain_id: uuid.UUID,
+    ) -> TeamRequest:
+        """Перевести отклик капитаном из PENDING_CAPTAIN в PENDING_USER."""
+        async with self.uow:
+            req = await self.uow.requests.get_by_id_for_update(request_id)
+            if not req:
+                raise EntityNotFoundError(f"Заявка с ID {request_id} не найдена")
+
+            team = await self.uow.teams.get_by_id_for_update(req.team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {req.team_id} не найдена")
+            if team.captain_id != captain_id:
+                raise PermissionDeniedError(
+                    "Одобрять заявку может только капитан команды"
+                )
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(
+                    f"Мероприятие с ID {team.event_id} не найдено"
+                )
+
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            if req.status != TeamRequestStatus.PENDING_CAPTAIN:
+                raise InvalidStateError("Заявку нельзя одобрить в текущем статусе")
+
+            target_registration = (
+                await self.uow.registrations.get_by_event_and_user_for_update(
+                    event.id,
+                    req.user_id,
+                )
+            )
+            if not target_registration:
+             raise InvalidStateError("Кандидат не зарегистрирован на мероприятие")
+            if target_registration.team_id is not None:
+             raise AlreadyInTeamError()
+
+            current_members_count = await self.uow.teams.get_members_count(team.id)
+            limit = min(team.max_members, event.max_team_size)
+            if current_members_count >= limit:
+                raise TeamIsFullError()
+
+            await self.uow.requests.update(
+                req.id,
+                {"status": TeamRequestStatus.PENDING_USER},
+            )
+            req.status = TeamRequestStatus.PENDING_USER
+            await self.uow.commit()
+            return await self.uow.requests.get_by_id_with_relations(request_id)
+
+    async def user_confirm_request(
+        self,
+        request_id: uuid.UUID,
+        user_id: uuid.UUID,
+    ) -> TeamRequest:
+        """Подтвердить приглашение или одобренный отклик участником."""
+        async with self.uow:
+            req = await self.uow.requests.get_by_id_for_update(request_id)
+            if not req:
+                raise EntityNotFoundError(f"Заявка с ID {request_id} не найдена")
+            if req.user_id != user_id:
+                raise PermissionDeniedError(
+                    "Подтверждать заявку может только её адресат"
+                )
+            if req.status != TeamRequestStatus.PENDING_USER:
+                raise InvalidStateError("Заявку нельзя подтвердить в текущем статусе")
+
+            team = await self.uow.teams.get_by_id_for_update(req.team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {req.team_id} не найдена")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(
+                    f"Мероприятие с ID {team.event_id} не найдено"
+                )
+
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            registration = (
+                await self.uow.registrations.get_by_event_and_user_for_update(
+                    event.id, user_id
+                )
+            )
+            if not registration:
+                raise InvalidStateError(
+                    "Чтобы подтвердить заявку, нужно быть зарегистрированным на мероприятии"
+                )
+            if registration.team_id is not None:
+                raise AlreadyInTeamError()
+
+            current_members_count = await self.uow.teams.get_members_count(team.id)
+            limit = min(team.max_members, event.max_team_size)
+            if current_members_count >= limit:
+                raise TeamIsFullError()
+
+            user = await self.uow.users.find_one_or_none(id=user_id)
+            if not user:
+                raise EntityNotFoundError(f"Пользователь с ID {user_id} не найден")
+
+            now = datetime.now(timezone.utc)
+            registration.team_id = team.id
+            registration.joined_team_at = now
+            await self.uow.registrations.update(
+                registration.id,
+                {"team_id": team.id, "joined_team_at": now},
+            )
+
+            needed_roles = list(team.needed_roles or [])
+            self._close_one_needed_role(
+                needed_roles,
+                list(getattr(user, "specializations", []) or []),
+                target_role=req.target_role,
+            )
+            team.needed_roles = needed_roles
+            await self.uow.teams.update(team.id, {"needed_roles": needed_roles})
+
+            await self.uow.requests.update(
+                req.id,
+                {"status": TeamRequestStatus.ACCEPTED},
+            )
+            req.status = TeamRequestStatus.ACCEPTED
+            await self.uow.requests.cancel_other_user_requests(
+                event.id,
+                user_id,
+                exclude_request_id=req.id,
+            )
+            if current_members_count + 1 >= limit:
+                await self.uow.requests.cancel_team_pending_requests(
+                    team.id,
+                    exclude_request_id=req.id,
+                )
+
+            await self.uow.commit()
+            return await self.uow.requests.get_by_id_with_relations(request_id)
+
+    async def reject_request(
+        self,
+        request_id: uuid.UUID,
+        actor_user_id: uuid.UUID,
+    ) -> TeamRequest:
+        """Отклонить или отменить активную заявку/приглашение."""
+        async with self.uow:
+            req = await self.uow.requests.get_by_id_for_update(request_id)
+            if not req:
+                raise EntityNotFoundError(f"Заявка с ID {request_id} не найдена")
+
+            team = await self.uow.teams.get_by_id_for_update(req.team_id)
+            if not team:
+                raise EntityNotFoundError(f"Команда с ID {req.team_id} не найдена")
+
+            event = await self.uow.events.find_one_or_none(id=team.event_id)
+            if not event:
+                raise EntityNotFoundError(
+                    f"Мероприятие с ID {team.event_id} не найдено"
+                )
+
+            await self._sync_event_state(event)
+            self._ensure_registration_phase(event)
+
+            if req.status not in (
+                TeamRequestStatus.PENDING_CAPTAIN,
+                TeamRequestStatus.PENDING_USER,
+            ):
+                raise InvalidStateError("Заявку нельзя отклонить в текущем статусе")
+
+            if req.status == TeamRequestStatus.PENDING_CAPTAIN:
+                if actor_user_id == req.user_id:
+                    new_status = TeamRequestStatus.CANCELLED
+                elif actor_user_id == team.captain_id:
+                    new_status = TeamRequestStatus.REJECTED
+                else:
+                    raise PermissionDeniedError(
+                        "Отклонять заявку может только её адресат или капитан команды"
+                    )
+            else:
+                if actor_user_id == team.captain_id:
+                    new_status = TeamRequestStatus.CANCELLED
+                elif actor_user_id == req.user_id:
+                    new_status = TeamRequestStatus.REJECTED
+                else:
+                    raise PermissionDeniedError(
+                        "Отклонять приглашение может только капитан команды или его адресат"
+                    )
+
+            await self.uow.requests.update(req.id, {"status": new_status})
+            req.status = new_status
+            await self.uow.commit()
+            return await self.uow.requests.get_by_id_with_relations(request_id)
+
     async def get_team_detail(
         self,
         team_id: uuid.UUID,
@@ -339,11 +752,8 @@ class TeamServices:
                     f"Мероприятие с ID {team.event_id} не найдено"
                 )
             await self._sync_event_state(event)
-            if event.status != EventStatus.REGISTRATION or datetime.now(timezone.utc) > event.registration_end:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Регистрация на это мероприятие закрыта",
-                )
+
+            self._ensure_registration_phase(event)
 
             user = await self.uow.users.find_one_or_none(id=user_id)
             if not user:

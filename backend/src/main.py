@@ -3,15 +3,20 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from api.event_router import router as event_router
 from api.exception_handlers import register_exception_handlers
+from api.request_router import router as request_router
 from api.team_router import router as team_router
 from api.upload_router import router as upload_router
 from api.user_router import router as user_router
 from auth.auth import auth_backend, bearer_backend, fastapi_users
 from auth.schemas import UserCreate, UserRead
 from config import FRONTEND_URLS
+from utils.limiter import ip_limiter, limiter
 
 app = FastAPI(
     title="TeamFinder API",
@@ -20,6 +25,10 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url="/redoc",
 )
+
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_middleware(SlowAPIMiddleware)
 
 # Монтирование директории статики для загружаемых медиа (аватарки, баннеры)
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
@@ -38,9 +47,17 @@ app.add_middleware(
 # Регистрация глобальных обработчиков доменных ошибок
 register_exception_handlers(app)
 
-# Роутеры аутентификации (Cookie-транспорт)
+# Роутеры аутентификации (Cookie-транспорт) с защитой от брутфорса 10 req/min с одного IP
+jwt_auth_router = fastapi_users.get_auth_router(auth_backend)
+for route in jwt_auth_router.routes:
+    if getattr(route, "path", "") == "/login":
+        limited_login = ip_limiter.limit("10/minute")(route.endpoint)
+        route.endpoint = limited_login
+        if hasattr(route, "dependant"):
+            route.dependant.call = limited_login
+
 app.include_router(
-    fastapi_users.get_auth_router(auth_backend),
+    jwt_auth_router,
     prefix="/api/v1/auth/jwt",
     tags=["Auth"],
 )
@@ -80,6 +97,12 @@ app.include_router(
 # Роутер управления командами
 app.include_router(
     team_router,
+    prefix="/api/v1",
+)
+
+# Роутер заявок и приглашений в команды
+app.include_router(
+    request_router,
     prefix="/api/v1",
 )
 

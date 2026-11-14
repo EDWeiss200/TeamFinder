@@ -11,6 +11,7 @@ from utils.exceptions import (
     IncompleteTeamError,
     InvalidStateError,
     PermissionDeniedError,
+    RegistrationClosedError,
     UnprocessableEntityError,
     TeamIsFullError,
 )
@@ -46,6 +47,7 @@ def register_exception_handlers(app: FastAPI) -> None:
             status_code=status.HTTP_409_CONFLICT,
             content={"detail": exc.message},
         )
+ 
 
     @app.exception_handler(DeadlinePassedError)
     async def deadline_passed_handler(request: Request, exc: DeadlinePassedError):
@@ -81,5 +83,14 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def domain_error_handler(request: Request, exc: DomainError):
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
+            content={"detail": exc.message},
+        )
+    
+    @app.exception_handler(RegistrationClosedError)
+    async def registration_closed_handler(
+        request: Request, exc: RegistrationClosedError
+    ):
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
             content={"detail": exc.message},
         )

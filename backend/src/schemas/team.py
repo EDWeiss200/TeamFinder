@@ -6,7 +6,9 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from models.enums import ParticipantSpecialization
+from models.enums import ParticipantSpecialization, TeamRequestStatus, TeamRequestType
+from models.team import TeamRequest
+from schemas.event import EventRegistrationUserRead
 
 
 # =====================================================================
@@ -227,6 +229,53 @@ class TeamDetailRead(TeamRead):
         default=False,
         description="Является ли текущий авторизованный пользователь капитаном этой команды",
     )
+
+
+class TeamApplicationCreate(BaseModel):
+    """Схема подачи отклика в команду."""
+
+    message: Optional[str] = Field(default=None, max_length=1000)
+    target_role: Optional[ParticipantSpecialization] = None
+
+
+class TeamInviteCreate(BaseModel):
+    """Схема создания приглашения в команду."""
+
+    message: Optional[str] = Field(default=None, max_length=1000)
+    target_role: Optional[ParticipantSpecialization] = None
+
+
+class TeamRequestRead(BaseModel):
+    """Схема чтения заявки/приглашения в команду."""
+
+    id: uuid.UUID
+    event_id: uuid.UUID
+    team_id: uuid.UUID
+    team_name: Optional[str] = None
+    user_id: uuid.UUID
+    user: Optional[EventRegistrationUserRead] = None
+    target_role: Optional[ParticipantSpecialization] = None
+    message: Optional[str] = None
+    request_type: TeamRequestType
+    status: TeamRequestStatus
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def transform_request_orm(cls, data: Any) -> Any:
+        """Подставить team_name при получении ORM-объекта TeamRequest."""
+        if isinstance(data, dict):
+            return data
+        if isinstance(data, TeamRequest):
+            payload = dict(getattr(data, "__dict__", {}))
+            team = getattr(data, "team", None)
+            if team is not None:
+                payload["team_name"] = getattr(team, "name", None)
+            return payload
+        return data
 
 
 # =====================================================================

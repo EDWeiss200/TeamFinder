@@ -4,6 +4,7 @@ import uuid
 from typing import List, Optional
 
 from sqlalchemy import select, update
+from sqlalchemy.orm import joinedload
 
 from models.enums import TeamRequestStatus
 from models.team import TeamRequest
@@ -114,6 +115,7 @@ class RequestRepository(SQLAlchemyRepository):
         """Получить все заявки пользователя в рамках мероприятия."""
         stmt = (
             select(self.model)
+            .options(joinedload(self.model.user), joinedload(self.model.team))
             .where(
                 self.model.event_id == event_id,
                 self.model.user_id == user_id,
@@ -130,8 +132,32 @@ class RequestRepository(SQLAlchemyRepository):
         """Получить все входящие и исходящие заявки команды."""
         stmt = (
             select(self.model)
+            .options(joinedload(self.model.user), joinedload(self.model.team))
             .where(self.model.team_id == team_id)
             .order_by(self.model.created_at.desc())
         )
         res = await self.session.execute(stmt)
         return list(res.scalars().all())
+
+    async def get_by_id_for_update(
+        self,
+        request_id: uuid.UUID,
+    ) -> Optional[TeamRequest]:
+        """Получить заявку по ID с блокировкой строки."""
+        stmt = select(self.model).where(self.model.id == request_id).with_for_update()
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def get_by_id_with_relations(
+        self,
+        request_id: uuid.UUID,
+    ) -> Optional[TeamRequest]:
+        """Получить заявку по ID вместе с user/team для ответа API."""
+        stmt = (
+            select(self.model)
+            .execution_options(populate_existing=True)
+            .options(joinedload(self.model.user), joinedload(self.model.team))
+            .where(self.model.id == request_id)
+        )
+        res = await self.session.execute(stmt)
+        return res.scalar_one_or_none()

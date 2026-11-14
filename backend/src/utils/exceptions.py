@@ -66,3 +66,13 @@ class IncompleteTeamError(DomainError):
         message: str = "Команда не набрала минимальное количество участников по регламенту мероприятия",
     ):
         super().__init__(message)
+
+        
+class RegistrationClosedError(InvalidStateError):
+    """Регистрация на мероприятие закрыта (соответствует HTTP 409 Conflict)."""
+
+    def __init__(
+        self,
+        message: str = "Операция доступна только во время фазы регистрации мероприятия",
+    ):
+        super().__init__(message)

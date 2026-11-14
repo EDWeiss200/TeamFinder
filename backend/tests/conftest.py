@@ -14,10 +14,12 @@ from models.enums import (
     EventFormat,
     EventStatus,
     ParticipantSpecialization,
+    TeamRequestStatus,
+    TeamRequestType,
     UserRole,
 )
 from models.event import Event, EventRegistration
-from models.team import Team
+from models.team import Team, TeamRequest
 from models.user import User
 from utils.uow import IUnitOfWork
 
@@ -170,11 +172,36 @@ def make_team(event: Event, captain: User, **overrides: Any) -> Team:
     return team
 
 
+def make_team_request(event: Event, team: Team, user: User, **overrides: Any) -> TeamRequest:
+    """Создает объект TeamRequest в памяти."""
+    now = datetime.now(timezone.utc)
+    defaults = {
+        "id": uuid.uuid4(),
+        "event_id": event.id,
+        "team_id": team.id,
+        "user_id": user.id,
+        "target_role": None,
+        "message": None,
+        "request_type": TeamRequestType.APPLICATION,
+        "status": TeamRequestStatus.PENDING_CAPTAIN,
+        "created_at": now,
+        "updated_at": now,
+    }
+    defaults.update(overrides)
+    request = TeamRequest(**defaults)
+    request.team = team
+    request.user = user
+    return request
+
+
 @pytest.fixture
 async def async_client() -> AsyncClient:
     """Асинхронный HTTP-клиент для тестирования роутеров FastAPI."""
+    from utils.limiter import ip_limiter, limiter
+
+    limiter.reset()
+    ip_limiter.reset()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client
-    # Очищаем переопределения зависимостей после каждого теста
     app.dependency_overrides.clear()
